@@ -1,0 +1,46 @@
+# Feature Specification: DAGOS Core Runtime
+
+Feature: 001-core-runtime
+
+## Purpose
+Build the smallest usable DAGOS runtime that accepts a coding request, maintains durable project state, classifies active context with Jev, compiles a versioned IR, invokes a selected inference provider, and persists structured results.
+
+## User Stories
+US1: A developer submits a coding message and receives streamed output through a configured provider.
+US2: Requests, observations, decisions, artifacts, and conversation turns persist after the run.
+US3: Jev classifies durable nodes for active or removed context without deleting them.
+US4: A provider and model can be selected without changing DAGOS state semantics.
+US5: A developer can inspect DAG state, active context, events, IR, and structured response.
+
+## Functional Requirements
+FR-001 Persist DAG nodes and edges.
+FR-002 Support node types task, artifact, observation, decision, result, conversation.
+FR-003 Support edges depends_on, produces, observed_from, related_to, supersedes.
+FR-004 Maintain active-context membership separately from DAG storage.
+FR-005 Removing active context never deletes the DAG node.
+FR-006 Jev accepts a machine-readable classification request.
+FR-007 Jev output is limited to context classification.
+FR-008 Compile active state into a versioned inference IR.
+FR-009 Providers receive IR, not raw DAG records.
+FR-010 Provider input is JSON.
+FR-011 Provider output is JSON with explicit presentation prose and structured emissions.
+FR-012 Persist runs and ordered events.
+FR-013 Support inference streaming as ordered events.
+FR-014 Provider adapters implement a common interface.
+FR-015 Persist provider and model identity on every run.
+FR-016 Represent the editable system prompt explicitly.
+FR-017 Expose enough state for a basic inspector.
+FR-018 MCP is optional and not required for a basic run.
+FR-019 Invalid provider responses fail closed and create an error event.
+FR-020 Core state transitions have automated tests.
+
+## Acceptance Scenarios
+1. Empty project + user message creates conversation state and a run.
+2. Jev classification changes active context without deleting durable nodes.
+3. Inference receives only versioned IR.
+4. Valid structured emissions become durable DAG records.
+5. Malformed provider output creates an error and no invalid semantic mutation.
+6. A normal run works when MCP is unavailable.
+
+## Out of Scope
+Planning agents, autonomous loops, tool orchestration, provider routing, embeddings, vector databases, and complex memory policies.
