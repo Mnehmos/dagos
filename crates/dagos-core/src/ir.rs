@@ -90,26 +90,28 @@ fn recent_run_outcomes(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrEvent>, Stor
 
     let mut outcomes = Vec::with_capacity(earlier.len());
     for run in earlier {
+        let events = tx.events(&run.id)?;
         let outcome = match run.status {
             RunStatus::Completed => IrEvent {
                 run_id: run.id,
                 event_type: IrEventType::RunCompleted,
                 error_code: None,
                 message: None,
+                prose: events.into_iter().rev().find_map(|event| match event.data {
+                    EventData::ResponseValidated { response } => Some(response.presentation.prose),
+                    _ => None,
+                }),
             },
-            RunStatus::Failed => {
-                let message =
-                    tx.events(&run.id)?.into_iter().rev().find_map(|event| match event.data {
-                        EventData::RunFailed { message, .. } => Some(message),
-                        _ => None,
-                    });
-                IrEvent {
-                    run_id: run.id,
-                    event_type: IrEventType::RunFailed,
-                    error_code: Some(run.error_code.unwrap_or(ErrorCode::Internal)),
-                    message,
-                }
-            }
+            RunStatus::Failed => IrEvent {
+                run_id: run.id,
+                event_type: IrEventType::RunFailed,
+                error_code: Some(run.error_code.unwrap_or(ErrorCode::Internal)),
+                message: events.into_iter().rev().find_map(|event| match event.data {
+                    EventData::RunFailed { message, .. } => Some(message),
+                    _ => None,
+                }),
+                prose: None,
+            },
             // Only one run per project runs at a time, so an earlier run is always finished.
             RunStatus::Running => continue,
         };

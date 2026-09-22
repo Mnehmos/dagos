@@ -46,7 +46,7 @@
       }
     },
     "recent_events": {
-      "description": "How the project's most recent earlier runs ended, oldest first.",
+      "description": "How the project's most recent earlier runs ended, oldest first. Failures carry their error code and message; completed runs carry the prose they presented.",
       "type": "array",
       "items": {
         "type": "object",
@@ -55,7 +55,11 @@
           "run_id": {"type": "string", "pattern": "^run_[0-9a-z]{1,64}$"},
           "type": {"enum": ["run.completed", "run.failed"]},
           "error_code": {"type": "string"},
-          "message": {"type": "string"}
+          "message": {"type": "string"},
+          "prose": {
+            "description": "The presentation prose of a completed run's validated response, taken from the event history. Presentation only: never DAG state.",
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }

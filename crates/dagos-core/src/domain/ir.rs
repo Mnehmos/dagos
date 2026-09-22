@@ -65,7 +65,8 @@ closed_enum!(
 );
 
 /// How an earlier run ended. Failures carry their code and message, so a model can see why its
-/// previous output was rejected.
+/// previous output was rejected; completed runs carry the prose they presented, from the event
+/// history (never DAG state), so a conversation keeps its thread.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IrEvent {
@@ -76,6 +77,8 @@ pub struct IrEvent {
     pub error_code: Option<ErrorCode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prose: Option<String>,
 }
 
 /// A capability description. Descriptive only: DAGOS v0.1 never executes tools.

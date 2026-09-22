@@ -31,10 +31,10 @@
 ## Provider Runtime
 - [x] T021 Define provider adapter trait.
 - [x] T022 Implement fake streaming provider.
-- [ ] T023 Persist inference delta events.
+- [x] T023 Persist inference delta events.
 - [x] T024 Validate final structured responses.
-- [ ] T025 Apply valid emissions to DAG state.
-- [ ] T026 Test malformed responses, timeouts, and failure state.
+- [x] T025 Apply valid emissions to DAG state.
+- [x] T026 Test malformed responses, timeouts, and failure state.
 
 ## First Real Provider
 - [ ] T027 Implement one real provider behind the common interface.

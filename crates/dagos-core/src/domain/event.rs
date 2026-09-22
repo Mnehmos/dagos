@@ -6,8 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::ids::{EventId, NodeId, RunId};
+use super::dag::{EdgeType, NodeType};
+use super::ids::{EdgeId, EventId, NodeId, RunId};
+use super::ir::InferenceIr;
 use super::jev::{ContextClassification, JevRequest};
+use super::response::{EmissionRef, InferenceResponse};
 use super::run::{ErrorCode, ModelId, ProviderId};
 use super::time::Timestamp;
 
@@ -29,6 +32,9 @@ pub enum EventData {
     /// A run began with this provider, model, and system prompt.
     #[serde(rename = "run.started")]
     RunStarted { provider_id: ProviderId, model_id: ModelId, system_prompt: String },
+    /// The user's message was recorded as a durable `conversation` node: the run's task.
+    #[serde(rename = "message.recorded")]
+    MessageRecorded { node_id: NodeId, text: String },
     /// The run's active context was seeded with the previous run's members (`from_run_id` is
     /// `null` for a project's first run).
     #[serde(rename = "context.carried")]
@@ -48,6 +54,35 @@ pub enum EventData {
     /// A node left the run's active context. The durable node is unaffected.
     #[serde(rename = "context.removed")]
     ContextRemoved { node_id: NodeId },
+    /// The run's inference IR was compiled; this is exactly what the provider receives.
+    #[serde(rename = "ir.compiled")]
+    IrCompiled { ir: InferenceIr },
+    /// The provider was called.
+    #[serde(rename = "inference.started")]
+    InferenceStarted { provider_id: ProviderId, model_id: ModelId },
+    /// A fragment of streamed presentation prose. Never canonical state.
+    #[serde(rename = "inference.delta")]
+    InferenceDelta { text: String },
+    /// The provider's raw final output, recorded verbatim before validation.
+    #[serde(rename = "inference.completed")]
+    InferenceCompleted { output: String },
+    /// The final output was validated and its emissions applied, atomically with this event.
+    #[serde(rename = "response.validated")]
+    ResponseValidated { response: InferenceResponse },
+    /// The final output was rejected; nothing from it entered the DAG.
+    #[serde(rename = "response.rejected")]
+    ResponseRejected { reason: String },
+    /// An emission became a durable node.
+    #[serde(rename = "dag.node_created")]
+    DagNodeCreated {
+        node_id: NodeId,
+        node_type: NodeType,
+        #[serde(rename = "ref")]
+        emission_ref: EmissionRef,
+    },
+    /// An emission became a durable edge.
+    #[serde(rename = "dag.edge_created")]
+    DagEdgeCreated { edge_id: EdgeId, from: NodeId, to: NodeId, edge_type: EdgeType },
     /// The run finished and its results are durable.
     #[serde(rename = "run.completed")]
     RunCompleted {},
