@@ -11,8 +11,10 @@ mod context;
 mod dag;
 mod event;
 mod ids;
+mod jev;
 mod project;
 mod run;
+mod schema;
 mod time;
 
 pub use context::{Classification, ContextMember, ContextSource};
@@ -21,6 +23,8 @@ pub use event::{Event, EventData};
 pub use ids::{
     EdgeId, EventId, IdError, IdGenerator, NodeId, ProjectId, RandomIds, RunId, SequentialIds,
 };
+pub use jev::{ContextClassification, JevCandidate, JevEdge, JevRequest, NodeClassification};
 pub use project::Project;
 pub use run::{ErrorCode, IdentityError, ModelId, ProviderId, Run, RunConfig, RunStatus};
+pub use schema::{JevContextSchema, JevRequestSchema};
 pub use time::{Clock, SteppingClock, SystemClock, Timestamp, TimestampError};

@@ -16,7 +16,7 @@
 - [x] T011 Test DAG and active-context invariants transactionally.
 
 ## Jev
-- [ ] T012 Define Jev classification contract.
+- [x] T012 Define Jev classification contract.
 - [ ] T013 Implement Jev adapter trait.
 - [ ] T014 Implement deterministic fake Jev.
 - [ ] T015 Apply classifications to active context.

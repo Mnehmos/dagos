@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "kiss://schemas/jev-context/v1",
   "title": "DAGOS Jev Context Classification v1",
+  "description": "Jev's entire output: one classification label per node. Jev only classifies context membership, so the contract has no room for plans, routes, provider choices, tool calls, actions, or prose. Each node_id must be a candidate from the request and appear at most once; candidates Jev leaves out keep their current membership.",
   "type": "object",
   "required": ["schema", "classifications"],
   "properties": {
@@ -11,7 +12,13 @@
       "items": {
         "type": "object",
         "required": ["node_id", "classification"],
-        "properties": {"node_id": {"type": "string"}, "classification": {"type": "string"}},
+        "properties": {
+          "node_id": {"type": "string", "pattern": "^node_[0-9a-z]{1,64}$"},
+          "classification": {
+            "description": "active: the node belongs in the run's active context. inactive: it does not; the durable node is unaffected.",
+            "enum": ["active", "inactive"]
+          }
+        },
         "additionalProperties": false
       }
     }
