@@ -7,6 +7,11 @@
 
 mod fake_jev;
 mod jev;
+mod projection;
 
 pub use fake_jev::{DEFAULT_CONVERSATION_WINDOW, FakeJev};
 pub use jev::{JevClassifier, JevError};
+pub use projection::{
+    ClassificationError, ContextChanges, apply_classification, carry_context,
+    classification_request, validate_classification,
+};

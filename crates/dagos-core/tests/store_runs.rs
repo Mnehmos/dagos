@@ -35,9 +35,9 @@ fn node(store: &Store, project: &ProjectId, text: &str) -> NodeId {
         .id
 }
 
+/// A non-lifecycle event to append in ordering tests.
 fn note(text: &str) -> EventData {
-    // Any non-lifecycle event would do; failure events are the only other kind defined so far.
-    EventData::RunFailed { error_code: ErrorCode::Internal, message: text.into() }
+    EventData::JevRejected { reason: text.into(), output: String::new() }
 }
 
 #[test]

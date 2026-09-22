@@ -6,7 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::ids::{EventId, RunId};
+use super::ids::{EventId, NodeId, RunId};
+use super::jev::{ContextClassification, JevRequest};
 use super::run::{ErrorCode, ModelId, ProviderId};
 use super::time::Timestamp;
 
@@ -28,6 +29,25 @@ pub enum EventData {
     /// A run began with this provider, model, and system prompt.
     #[serde(rename = "run.started")]
     RunStarted { provider_id: ProviderId, model_id: ModelId, system_prompt: String },
+    /// The run's active context was seeded with the previous run's members (`from_run_id` is
+    /// `null` for a project's first run).
+    #[serde(rename = "context.carried")]
+    ContextCarried { from_run_id: Option<RunId>, node_ids: Vec<NodeId> },
+    /// Jev was asked to classify context membership.
+    #[serde(rename = "jev.requested")]
+    JevRequested { jev_id: String, request: JevRequest },
+    /// Jev's output passed validation and was applied to the active context.
+    #[serde(rename = "jev.classified")]
+    JevClassified { classification: ContextClassification },
+    /// Jev's output violated the contract or the request and was discarded unapplied.
+    #[serde(rename = "jev.rejected")]
+    JevRejected { reason: String, output: String },
+    /// A node joined the run's active context.
+    #[serde(rename = "context.added")]
+    ContextAdded { node_id: NodeId },
+    /// A node left the run's active context. The durable node is unaffected.
+    #[serde(rename = "context.removed")]
+    ContextRemoved { node_id: NodeId },
     /// The run finished and its results are durable.
     #[serde(rename = "run.completed")]
     RunCompleted {},
