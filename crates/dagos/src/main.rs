@@ -1,11 +1,9 @@
 //! `dagos` command-line interface: the transport boundary around `dagos-core`.
 
-mod providers;
-mod workspace;
-
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
@@ -13,7 +11,9 @@ use dagos_core::domain::{EventData, ModelId, ProviderId, RunConfig, RunStatus};
 use dagos_core::store::EventListener;
 use serde_json::json;
 
-use workspace::Workspace;
+use dagos::inspect;
+use dagos::server;
+use dagos::workspace::{self, Workspace};
 
 /// DAGOS: a minimal DAG operating system for LLM coding workflows.
 #[derive(Debug, Parser)]
@@ -49,6 +49,36 @@ enum Command {
     Run(RunArgs),
     /// Mark runs left running by a crashed process as failed (`interrupted`).
     Recover,
+    /// Print recorded state as JSON (read-only).
+    Inspect {
+        #[command(subcommand)]
+        what: Option<Inspect>,
+    },
+    /// Serve the inspection API on a local port.
+    Serve {
+        /// Address to bind; loopback by default so the workspace stays local.
+        #[arg(long, default_value = "127.0.0.1:7420")]
+        address: String,
+    },
+}
+
+/// What to inspect. Runs are named by ID or `latest`.
+#[derive(Debug, Subcommand)]
+enum Inspect {
+    /// The project: run defaults, providers, the durable DAG, and runs (the default).
+    Overview,
+    /// The durable DAG: nodes and edges.
+    Dag,
+    /// Everything recorded about a run.
+    Run { run: Option<String> },
+    /// A run's ordered event history.
+    Events { run: Option<String> },
+    /// A run's active context.
+    Context { run: Option<String> },
+    /// The IR a run's provider received.
+    Ir { run: Option<String> },
+    /// A run's validated structured response.
+    Response { run: Option<String> },
 }
 
 /// Overrides for provider, model, and system prompt.
@@ -141,7 +171,8 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
         Command::Config(args) => {
             let workspace = Workspace::open(&cli.dir, None, timeout)?;
             if !args.selection.is_empty() {
-                let config = args.selection.apply(workspace.run_config()?)?;
+                let config =
+                    args.selection.apply(workspace.run_config().map_err(|e| e.to_string())?)?;
                 workspace
                     .runtime
                     .set_defaults(&workspace.project.id, &config)
@@ -154,7 +185,7 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
                 .collect();
             let report = json!({
                 "project": workspace.project,
-                "run_defaults": workspace.run_config()?,
+                "run_defaults": workspace.run_config().map_err(|e| e.to_string())?,
                 "providers": providers,
             });
             println!("{}", serde_json::to_string_pretty(&report).expect("report serializes"));
@@ -168,7 +199,50 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
             println!("Marked {} interrupted run(s) as failed.", recovered.len());
             Ok(ExitCode::SUCCESS)
         }
+        Command::Inspect { what } => {
+            let workspace = Workspace::open(&cli.dir, None, timeout)?;
+            let document = inspect_view(&workspace, what.unwrap_or(Inspect::Overview))?;
+            println!("{}", serde_json::to_string_pretty(&document).expect("views serialize"));
+            Ok(ExitCode::SUCCESS)
+        }
+        Command::Serve { address } => {
+            let workspace = Arc::new(Workspace::open(&cli.dir, None, timeout)?);
+            let listener = tokio::net::TcpListener::bind(&address)
+                .await
+                .map_err(|error| format!("cannot listen on {address}: {error}"))?;
+            let bound = listener.local_addr().map_err(|e| e.to_string())?;
+            let name = &workspace.project.name;
+            eprintln!("DAGOS inspector API for `{name}` on http://{bound}/api/overview");
+            server::serve(listener, workspace).await.map_err(|e| e.to_string())?;
+            Ok(ExitCode::SUCCESS)
+        }
     }
+}
+
+fn to_json(value: &impl serde::Serialize) -> serde_json::Value {
+    serde_json::to_value(value).expect("views serialize")
+}
+
+/// The JSON document for one `dagos inspect` request.
+fn inspect_view(workspace: &Workspace, what: Inspect) -> Result<serde_json::Value, String> {
+    let detail = |reference: Option<String>| -> Result<inspect::RunDetail, String> {
+        let reference = reference.unwrap_or_else(|| "latest".to_owned());
+        let not_found = || format!("run `{reference}` not found");
+        let id = inspect::resolve_run(&workspace.store, &workspace.project.id, &reference)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(not_found)?;
+        inspect::run_detail(&workspace.store, &id).map_err(|e| e.to_string())?.ok_or_else(not_found)
+    };
+    let overview = || inspect::overview(workspace).map_err(|e| e.to_string());
+    Ok(match what {
+        Inspect::Overview => to_json(&overview()?),
+        Inspect::Dag => to_json(&overview()?.dag),
+        Inspect::Run { run } => to_json(&detail(run)?),
+        Inspect::Events { run } => to_json(&detail(run)?.events),
+        Inspect::Context { run } => to_json(&detail(run)?.context),
+        Inspect::Ir { run } => to_json(&detail(run)?.ir),
+        Inspect::Response { run } => to_json(&detail(run)?.response),
+    })
 }
 
 async fn run(dir: &std::path::Path, args: RunArgs, timeout: Duration) -> Result<ExitCode, String> {
@@ -193,7 +267,7 @@ async fn run(dir: &std::path::Path, args: RunArgs, timeout: Duration) -> Result<
         }))
     };
     let workspace = Workspace::open(dir, listener, timeout)?;
-    let config = args.selection.apply(workspace.run_config()?)?;
+    let config = args.selection.apply(workspace.run_config().map_err(|e| e.to_string())?)?;
     let run = workspace
         .runtime
         .run(&workspace.project.id, &args.message, &config)

@@ -1,16 +1,54 @@
 # Quickstart
 
+Every step below runs offline with the fake Jev and the fake provider (`cargo run -p dagos -- <command>`).
+
 ## Empty Project
-Initialize DAGOS, start a fake-provider run, submit a message, then inspect the conversation node and ordered run events.
+Initialize DAGOS, run a message, then inspect the conversation node and ordered run events.
+
+```bash
+dagos init
+dagos run "Where should durable state live?"
+dagos inspect run latest     # message node, context, Jev output, IR, response, emissions, events
+dagos inspect events
+```
 
 ## Context
-Create durable nodes, classify them with fake Jev, apply classifications, inspect active context, and confirm removed nodes still exist.
+A second run carries the previous run's context, and fake Jev classifies every candidate: the first
+run's message and observation become active. Nodes Jev classifies inactive leave the context but stay
+in the DAG.
+
+```bash
+dagos run "Add restart tests"
+dagos inspect context        # members, their order, and why each is active (carried or jev)
+dagos inspect run            # carried, classification, context_added, context_removed
+dagos inspect dag            # every durable node and edge
+```
 
 ## IR
-Set a system prompt, create active context, compile inference IR v1, and verify the provider sees only IR.
+Set a system prompt; the next run's IR carries it, and the IR is exactly what the provider received.
+
+```bash
+dagos config --system-prompt "Answer in one sentence."
+dagos run "Summarize the decisions"
+dagos inspect ir
+```
 
 ## Failure
-Configure the fake provider to return malformed JSON. Confirm an error event is stored and no invalid semantic emissions enter the DAG.
+Select a fake model that returns malformed JSON. The run fails with an explicit error event, the raw
+output stays inspectable, and no emissions enter the DAG.
+
+```bash
+dagos run "Try this" --model fake-malformed
+dagos inspect run            # failure.error_code = response_invalid, rejected reason, raw output
+```
+
+Every other failure mode is one flag away: `fake-invalid-schema`, `fake-dangling-edge`, `fake-cycle`,
+`fake-timeout` (with `--inference-timeout 2`), and `fake-error`.
+
+## Inspector API
+`dagos serve` exposes the same views on loopback: `GET /api/overview`, `GET /api/runs/{id|latest}`,
+`GET /api/health`.
 
 ## First Milestone
-A complete fake-provider run must work without network access. This proves the architecture before adding real providers.
+A complete fake-provider run works without network access; `cargo test --workspace` proves it end to
+end.

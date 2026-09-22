@@ -8,7 +8,7 @@ use dagos_core::context::FakeJev;
 use dagos_core::domain::{ModelId, Project, ProviderId, RunConfig};
 use dagos_core::provider::FakeProvider;
 use dagos_core::runtime::Runtime;
-use dagos_core::store::{EventListener, Store};
+use dagos_core::store::{EventListener, Store, StoreError};
 
 use crate::providers;
 
@@ -73,12 +73,8 @@ impl Workspace {
     }
 
     /// The configuration new runs use: the project's defaults, or the built-in default.
-    pub fn run_config(&self) -> Result<RunConfig, String> {
-        Ok(self
-            .runtime
-            .defaults(&self.project.id)
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(default_run_config))
+    pub fn run_config(&self) -> Result<RunConfig, StoreError> {
+        Ok(self.runtime.defaults(&self.project.id)?.unwrap_or_else(default_run_config))
     }
 }
 

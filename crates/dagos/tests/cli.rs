@@ -123,3 +123,28 @@ fn recover_fails_runs_left_running_by_a_crash() {
     assert!(stdout(&recover).contains("Marked 1 interrupted run(s) as failed."));
     assert_eq!(dagos(&dir, &["run", "hello"]).status.code(), Some(0));
 }
+
+#[test]
+fn inspect_prints_recorded_state_as_json() {
+    let (_root, dir) = workspace();
+    assert!(dagos(&dir, &["run", "Add restart tests"]).status.success());
+
+    let overview = json(&dagos(&dir, &["inspect"]));
+    assert_eq!(overview["dag"]["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(overview["runs"][0]["message"], "Add restart tests");
+
+    let run = json(&dagos(&dir, &["inspect", "run", "latest"]));
+    assert_eq!(run["run"]["status"], "completed");
+    let ir = json(&dagos(&dir, &["inspect", "ir"]));
+    assert_eq!(ir["schema"], "kiss.inference-ir.v1");
+    assert_eq!(ir["task"]["message"], "Add restart tests");
+    let response = json(&dagos(&dir, &["inspect", "response"]));
+    assert_eq!(response["schema"], "kiss.inference-response.v1");
+    let events = json(&dagos(&dir, &["inspect", "events"]));
+    assert_eq!(events[0]["type"], "run.started");
+    assert!(json(&dagos(&dir, &["inspect", "dag"]))["edges"].is_array());
+
+    let missing = dagos(&dir, &["inspect", "run", "run_nope"]);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(stderr(&missing).contains("run `run_nope` not found"));
+}

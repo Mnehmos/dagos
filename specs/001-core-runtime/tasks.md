@@ -42,7 +42,7 @@
 - [x] T029 Add opt-in live-provider integration coverage.
 
 ## Inspector and Release
-- [ ] T030 Implement read-only state inspection.
+- [x] T030 Implement read-only state inspection.
 - [ ] T031 Add restart/persistence tests.
 - [ ] T032 Verify MCP is optional.
 - [ ] T033 Run Spec Kit analyze.
