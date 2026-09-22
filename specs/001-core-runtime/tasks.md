@@ -29,7 +29,7 @@
 - [ ] T020 Prove providers receive IR only.
 
 ## Provider Runtime
-- [ ] T021 Define provider adapter trait.
+- [x] T021 Define provider adapter trait.
 - [ ] T022 Implement fake streaming provider.
 - [ ] T023 Persist inference delta events.
 - [ ] T024 Validate final structured responses.
