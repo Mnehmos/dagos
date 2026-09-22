@@ -48,6 +48,10 @@ schema_tag!(
     /// `kiss.inference-ir.v1`
     InferenceIrSchema = "kiss.inference-ir.v1"
 );
+schema_tag!(
+    /// `kiss.inference-response.v1`
+    InferenceResponseSchema = "kiss.inference-response.v1"
+);
 
 #[cfg(test)]
 mod tests {

@@ -6,9 +6,13 @@
 //! [`crate::response`] layer validates it. Providers cannot see the store, and authentication,
 //! HTTP, and provider-specific request formatting stay inside each adapter.
 
+mod fake;
+
 use async_trait::async_trait;
 
 use crate::domain::{InferenceIr, ModelId, ProviderId};
+
+pub use fake::{FakeModel, FakeProvider};
 
 /// Everything a provider receives for one inference: which model to use and the compiled IR.
 #[derive(Debug, Clone, Copy)]

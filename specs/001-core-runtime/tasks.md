@@ -26,11 +26,11 @@
 - [x] T017 Define inference IR v1.
 - [x] T018 Implement deterministic IR compiler.
 - [x] T019 Add IR snapshot tests.
-- [ ] T020 Prove providers receive IR only.
+- [x] T020 Prove providers receive IR only.
 
 ## Provider Runtime
 - [x] T021 Define provider adapter trait.
-- [ ] T022 Implement fake streaming provider.
+- [x] T022 Implement fake streaming provider.
 - [ ] T023 Persist inference delta events.
 - [ ] T024 Validate final structured responses.
 - [ ] T025 Apply valid emissions to DAG state.
