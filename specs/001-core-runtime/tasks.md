@@ -43,7 +43,7 @@
 
 ## Inspector and Release
 - [x] T030 Implement read-only state inspection.
-- [ ] T031 Add restart/persistence tests.
+- [x] T031 Add restart/persistence tests.
 - [x] T032 Verify MCP is optional.
 - [ ] T033 Run Spec Kit analyze.
 - [ ] T034 Run implement/converge cycle.

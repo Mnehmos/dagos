@@ -22,7 +22,7 @@ pub const DEFAULT_CONVERSATION_WINDOW: usize = 6;
 /// 3. every other candidate is `active`.
 ///
 /// The same request always yields byte-identical output, so recorded classifications can be
-/// replayed. For failure testing it can instead return scripted raw output or be unavailable.
+/// replayed. For failure testing it can instead return scripted raw output, be unavailable, or hang.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FakeJev {
     mode: Mode,
@@ -33,6 +33,7 @@ enum Mode {
     Policy { conversation_window: usize },
     Scripted(String),
     Unavailable(String),
+    Hanging,
 }
 
 impl FakeJev {
@@ -54,6 +55,11 @@ impl FakeJev {
     /// Fails every request, as an unreachable endpoint would.
     pub fn unavailable(reason: impl Into<String>) -> Self {
         Self { mode: Mode::Unavailable(reason.into()) }
+    }
+
+    /// Never answers, as a hung endpoint would.
+    pub fn hanging() -> Self {
+        Self { mode: Mode::Hanging }
     }
 
     /// The default policy's classification of `request`.
@@ -116,6 +122,7 @@ impl JevClassifier for FakeJev {
             }
             Mode::Scripted(raw) => Ok(raw.clone()),
             Mode::Unavailable(reason) => Err(JevError(reason.clone())),
+            Mode::Hanging => std::future::pending().await,
         }
     }
 }

@@ -30,6 +30,9 @@ use crate::store::{Store, StoreError, Tx};
 /// How long a provider may take to return its final output, unless configured otherwise.
 pub const DEFAULT_INFERENCE_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// How long Jev may take to classify, unless configured otherwise.
+pub const DEFAULT_JEV_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A run could not be started or recorded at all. (A run that started and then failed is
 /// returned as a failed [`Run`] instead.)
 #[derive(Debug, thiserror::Error)]
@@ -47,6 +50,7 @@ pub struct Runtime {
     providers: BTreeMap<ProviderId, Arc<dyn InferenceProvider>>,
     tools: Vec<IrTool>,
     inference_timeout: Duration,
+    jev_timeout: Duration,
 }
 
 impl Runtime {
@@ -57,6 +61,7 @@ impl Runtime {
             providers: BTreeMap::new(),
             tools: Vec::new(),
             inference_timeout: DEFAULT_INFERENCE_TIMEOUT,
+            jev_timeout: DEFAULT_JEV_TIMEOUT,
         }
     }
 
@@ -74,6 +79,11 @@ impl Runtime {
 
     pub fn with_inference_timeout(mut self, timeout: Duration) -> Self {
         self.inference_timeout = timeout;
+        self
+    }
+
+    pub fn with_jev_timeout(mut self, timeout: Duration) -> Self {
+        self.jev_timeout = timeout;
         self
     }
 
@@ -204,10 +214,12 @@ impl Runtime {
             tx.append_event(&run.id, EventData::JevRequested { jev_id, request: request.clone() })?;
             Ok::<_, StoreError>(request)
         })?;
-        let raw = self
-            .jev
-            .classify(&request)
+        let raw = tokio::time::timeout(self.jev_timeout, self.jev.classify(&request))
             .await
+            .map_err(|_elapsed| {
+                let message = format!("no classification within {:?}", self.jev_timeout);
+                StageFailure::new(ErrorCode::JevFailed, message)
+            })?
             .map_err(|error| StageFailure::new(ErrorCode::JevFailed, error.to_string()))?;
         let classification = validate_classification(&request, &raw).map_err(|error| {
             StageFailure::new(ErrorCode::JevInvalidOutput, format!("Jev output rejected: {error}"))
