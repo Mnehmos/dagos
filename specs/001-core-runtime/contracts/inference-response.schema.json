@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kiss://schemas/inference-response/v1",
+  "title": "DAGOS Inference Response v1",
+  "type": "object",
+  "required": ["schema", "presentation", "emissions"],
+  "properties": {
+    "schema": {"const": "kiss.inference-response.v1"},
+    "presentation": {"type": "object", "required": ["prose"], "properties": {"prose": {"type": "string"}}, "additionalProperties": false},
+    "emissions": {"type": "array", "items": {"type": "object"}},
+    "tool_calls": {"type": "array", "items": {"type": "object"}},
+    "metadata": {"type": "object"}
+  },
+  "additionalProperties": false
+}
