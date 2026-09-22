@@ -198,11 +198,35 @@ mod tests {
     }
 
     #[test]
-    fn decodes_escapes_and_surrogate_pairs_split_across_chunks() {
+    fn decodes_simple_escapes_and_passes_utf8_through() {
         let document = r#"{"presentation": {"prose": "Say \"hi\"\n\\path\\ café 😀 \/"}}"#;
         for size in 1..=8 {
             assert_eq!(extract_in_chunks(document, size), "Say \"hi\"\n\\path\\ café 😀 /");
         }
+    }
+
+    #[test]
+    fn decodes_unicode_escapes_and_surrogate_pairs_split_across_chunks() {
+        // Built from parts so the source holds real `\uXXXX` escape sequences.
+        let escape = |hex: &str| format!("{}u{hex}", '\\');
+        let document = format!(
+            r#"{{"presentation": {{"prose": "caf{} {}{} {}"}}}}"#,
+            escape("00e9"),
+            escape("d83d"),
+            escape("de00"),
+            escape("0041"),
+        );
+        assert!(document.contains("caf\\u00e9"), "{document}");
+        for size in 1..=8 {
+            assert_eq!(
+                extract_in_chunks(&document, size),
+                "caf\u{e9} \u{1f600} A",
+                "chunks of {size}"
+            );
+        }
+        // A lone high surrogate cannot be decoded; it is dropped rather than garbling the text.
+        let lone = format!(r#"{{"presentation": {{"prose": "a{}b"}}}}"#, escape("d83d"));
+        assert_eq!(extract_in_chunks(&lone, 2), "ab");
     }
 
     #[test]
