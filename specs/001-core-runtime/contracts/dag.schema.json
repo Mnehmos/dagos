@@ -2,14 +2,18 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "kiss://schemas/dag/v1",
   "title": "DAGOS DAG Node v1",
+  "description": "One durable DAG node. Timestamps are UTC with millisecond precision; the fixed-width form sorts chronologically.",
   "type": "object",
-  "required": ["id", "type", "payload"],
+  "required": ["id", "type", "payload", "created_at", "updated_at"],
   "properties": {
-    "id": {"type": "string"},
+    "id": {"type": "string", "pattern": "^node_[0-9a-z]{1,64}$"},
     "type": {"enum": ["task", "artifact", "observation", "decision", "result", "conversation"]},
     "payload": {"type": "object"},
-    "created_at": {"type": "string"},
-    "updated_at": {"type": "string"}
+    "created_at": {"$ref": "#/$defs/timestamp"},
+    "updated_at": {"$ref": "#/$defs/timestamp"}
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "timestamp": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"}
+  }
 }

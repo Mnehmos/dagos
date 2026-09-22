@@ -3,3 +3,24 @@
 //! Nodes, edges, runs, events, Jev classifications, inference IR, and inference responses are
 //! defined here. This layer depends on nothing else in the crate and knows nothing about
 //! persistence, providers, or transports.
+//!
+//! Serialization is deterministic: struct fields serialize in declaration order and JSON object
+//! keys (payloads) in sorted order, so identical values always produce identical JSON.
+
+mod context;
+mod dag;
+mod event;
+mod ids;
+mod project;
+mod run;
+mod time;
+
+pub use context::{Classification, ContextMember, ContextSource};
+pub use dag::{DagEdge, DagNode, EdgeType, NodeType, Payload, UnknownVariant};
+pub use event::{Event, EventData};
+pub use ids::{
+    EdgeId, EventId, IdError, IdGenerator, NodeId, ProjectId, RandomIds, RunId, SequentialIds,
+};
+pub use project::Project;
+pub use run::{ErrorCode, IdentityError, ModelId, ProviderId, Run, RunConfig, RunStatus};
+pub use time::{Clock, SteppingClock, SystemClock, Timestamp, TimestampError};

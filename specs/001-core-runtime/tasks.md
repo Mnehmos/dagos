@@ -1,14 +1,14 @@
 # Tasks: DAGOS Core Runtime
 
 ## Foundation
-- [ ] T001 Establish Rust project structure and module boundaries.
-- [ ] T002 Add SQLite bootstrap and migrations.
-- [ ] T003 Add serde JSON types and common IDs/timestamps.
-- [ ] T004 Add machine-readable contracts and validation tests.
-- [ ] T005 Add CI test, format, and lint checks.
+- [x] T001 Establish Rust project structure and module boundaries.
+- [x] T002 Add SQLite bootstrap and migrations.
+- [x] T003 Add serde JSON types and common IDs/timestamps.
+- [x] T004 Add machine-readable contracts and validation tests.
+- [x] T005 Add CI test, format, and lint checks.
 
 ## Durable DAG
-- [ ] T006 Implement DagNode and DagEdge types.
+- [x] T006 Implement DagNode and DagEdge types.
 - [ ] T007 Implement node persistence.
 - [ ] T008 Implement edge persistence.
 - [ ] T009 Implement Run and Event persistence.
