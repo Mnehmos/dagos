@@ -192,7 +192,11 @@ impl Tx<'_> {
         Ok(edges)
     }
 
-    fn node_in_project(&self, project_id: &ProjectId, id: &NodeId) -> Result<bool, StoreError> {
+    pub(super) fn node_in_project(
+        &self,
+        project_id: &ProjectId,
+        id: &NodeId,
+    ) -> Result<bool, StoreError> {
         Ok(self.conn.query_row(
             "SELECT EXISTS (SELECT 1 FROM dag_nodes WHERE id = ?1 AND project_id = ?2)",
             params![id, project_id],

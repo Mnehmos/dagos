@@ -15,7 +15,7 @@ use super::time::Timestamp;
 pub struct Event {
     pub id: EventId,
     pub run_id: RunId,
-    pub sequence: u64,
+    pub sequence: u32,
     #[serde(flatten)]
     pub data: EventData,
     pub created_at: Timestamp,

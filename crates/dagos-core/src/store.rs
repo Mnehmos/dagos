@@ -10,9 +10,12 @@
 //! a node. The schema itself enforces the durable-state invariants (see
 //! `migrations/0001_initial.sql`), so they hold even for code that bypasses this API.
 
+mod context;
 mod dag;
+mod events;
 mod migrations;
 mod projects;
+mod runs;
 mod sql;
 
 use std::path::Path;
@@ -22,7 +25,8 @@ use std::time::Duration;
 use rusqlite::{Connection, TransactionBehavior};
 
 use crate::domain::{
-    Clock, EdgeType, IdGenerator, NodeId, ProjectId, RandomIds, SystemClock, Timestamp,
+    Clock, EdgeType, IdGenerator, NodeId, ProjectId, RandomIds, RunId, RunStatus, SystemClock,
+    Timestamp,
 };
 
 pub use migrations::SCHEMA_VERSION;
@@ -36,6 +40,12 @@ pub enum StoreError {
     SchemaTooNew { found: u32, supported: u32 },
     #[error("{kind} `{id}` not found")]
     NotFound { kind: &'static str, id: String },
+    #[error("run `{running}` is still running in this project")]
+    RunInProgress { running: RunId },
+    #[error("run `{id}` already finished with status `{status}`")]
+    RunFinished { id: RunId, status: RunStatus },
+    #[error("node `{0}` appears more than once in the active context")]
+    DuplicateContextMember(NodeId),
     #[error(transparent)]
     Dag(#[from] DagViolation),
     #[error(transparent)]

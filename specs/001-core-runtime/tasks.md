@@ -11,9 +11,9 @@
 - [x] T006 Implement DagNode and DagEdge types.
 - [x] T007 Implement node persistence.
 - [x] T008 Implement edge persistence.
-- [ ] T009 Implement Run and Event persistence.
-- [ ] T010 Implement ActiveContext persistence.
-- [ ] T011 Test DAG and active-context invariants transactionally.
+- [x] T009 Implement Run and Event persistence.
+- [x] T010 Implement ActiveContext persistence.
+- [x] T011 Test DAG and active-context invariants transactionally.
 
 ## Jev
 - [ ] T012 Define Jev classification contract.
