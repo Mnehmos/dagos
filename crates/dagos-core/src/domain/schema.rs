@@ -44,6 +44,10 @@ schema_tag!(
     /// `kiss.jev-context.v1`
     JevContextSchema = "kiss.jev-context.v1"
 );
+schema_tag!(
+    /// `kiss.inference-ir.v1`
+    InferenceIrSchema = "kiss.inference-ir.v1"
+);
 
 #[cfg(test)]
 mod tests {

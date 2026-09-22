@@ -2,15 +2,81 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "kiss://schemas/inference-ir/v1",
   "title": "DAGOS Inference IR v1",
+  "description": "The only document an inference provider receives. Compiled deterministically from a run's message, system prompt, active context, and recent run outcomes. It never contains storage records: no timestamps, project scopes, or raw payload columns.",
   "type": "object",
-  "required": ["schema", "system_prompt", "task", "context"],
+  "required": ["schema", "system_prompt", "task", "context", "recent_events"],
   "properties": {
     "schema": {"const": "kiss.inference-ir.v1"},
     "system_prompt": {"type": "string"},
-    "task": {"type": "object"},
-    "context": {"type": "array", "items": {"type": "object"}},
-    "recent_events": {"type": "array", "items": {"type": "object"}},
-    "tools": {"type": "array", "items": {"type": "object"}}
+    "task": {
+      "description": "The run's user message, recorded as a conversation node.",
+      "type": "object",
+      "required": ["node_id", "message"],
+      "properties": {
+        "node_id": {"$ref": "#/$defs/node_id"},
+        "message": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "context": {
+      "description": "The run's active context in stable order (node creation order).",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "type", "payload", "relations"],
+        "properties": {
+          "node_id": {"$ref": "#/$defs/node_id"},
+          "type": {"enum": ["task", "artifact", "observation", "decision", "result", "conversation"]},
+          "payload": {"type": "object"},
+          "relations": {
+            "description": "This node's outgoing edges to other nodes in this IR, oldest first. An entry reads: <this node> <type> <to>.",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["type", "to"],
+              "properties": {
+                "type": {"enum": ["depends_on", "produces", "observed_from", "related_to", "supersedes"]},
+                "to": {"$ref": "#/$defs/node_id"}
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "recent_events": {
+      "description": "How the project's most recent earlier runs ended, oldest first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run_id", "type"],
+        "properties": {
+          "run_id": {"type": "string", "pattern": "^run_[0-9a-z]{1,64}$"},
+          "type": {"enum": ["run.completed", "run.failed"]},
+          "error_code": {"type": "string"},
+          "message": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "tools": {
+      "description": "Optional capability descriptions (for example from MCP). Descriptive only: DAGOS v0.1 does not execute tools.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description", "input_schema"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "description": {"type": "string"},
+          "input_schema": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "node_id": {"type": "string", "pattern": "^node_[0-9a-z]{1,64}$"}
+  }
 }

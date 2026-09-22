@@ -23,7 +23,7 @@
 - [x] T016 Reject output outside the classification contract.
 
 ## IR
-- [ ] T017 Define inference IR v1.
+- [x] T017 Define inference IR v1.
 - [ ] T018 Implement deterministic IR compiler.
 - [ ] T019 Add IR snapshot tests.
 - [ ] T020 Prove providers receive IR only.
