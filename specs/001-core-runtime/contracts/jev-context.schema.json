@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kiss://schemas/jev-context/v1",
+  "title": "DAGOS Jev Context Classification v1",
+  "type": "object",
+  "required": ["schema", "classifications"],
+  "properties": {
+    "schema": {"const": "kiss.jev-context.v1"},
+    "classifications": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "classification"],
+        "properties": {"node_id": {"type": "string"}, "classification": {"type": "string"}},
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
