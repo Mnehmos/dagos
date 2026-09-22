@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kiss://schemas/inference-ir/v1",
+  "title": "DAGOS Inference IR v1",
+  "type": "object",
+  "required": ["schema", "system_prompt", "task", "context"],
+  "properties": {
+    "schema": {"const": "kiss.inference-ir.v1"},
+    "system_prompt": {"type": "string"},
+    "task": {"type": "object"},
+    "context": {"type": "array", "items": {"type": "object"}},
+    "recent_events": {"type": "array", "items": {"type": "object"}},
+    "tools": {"type": "array", "items": {"type": "object"}}
+  },
+  "additionalProperties": false
+}
