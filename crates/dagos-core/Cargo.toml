@@ -1,0 +1,15 @@
+[package]
+name = "dagos-core"
+description = "DAGOS core runtime: durable DAG, Jev context classification, versioned IR, provider boundary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Boundary rule: this crate must never depend on HTTP stacks or provider SDKs.
+# Real inference adapters live in their own crates and implement the provider trait.
+
+[dependencies]
+
+[lints]
+workspace = true

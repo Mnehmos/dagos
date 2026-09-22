@@ -1,0 +1,14 @@
+[package]
+name = "dagos"
+description = "DAGOS transport: command-line interface to the core runtime."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+dagos-core = { path = "../dagos-core" }
+
+[lints]
+workspace = true
