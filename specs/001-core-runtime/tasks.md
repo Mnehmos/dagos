@@ -32,7 +32,7 @@
 - [x] T021 Define provider adapter trait.
 - [x] T022 Implement fake streaming provider.
 - [ ] T023 Persist inference delta events.
-- [ ] T024 Validate final structured responses.
+- [x] T024 Validate final structured responses.
 - [ ] T025 Apply valid emissions to DAG state.
 - [ ] T026 Test malformed responses, timeouts, and failure state.
 

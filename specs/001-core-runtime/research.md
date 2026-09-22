@@ -11,6 +11,8 @@ Provider SDK details remain inside provider adapters. The core sees only the pro
 
 Streaming deltas are persisted as ordered events. Partial prose is presentation state. Only a validated final response can create semantic emissions.
 
+Assistant prose, partial or final, never becomes DAG state: it persists only in the run's event history. The run's user message is recorded as a `conversation` node because it is the run's request (and the IR task). Anything a model needs remembered it must emit as structured nodes and edges. Emission edges may only touch refs declared in the same response or nodes that were present in the IR; DAG rules that depend on live state (duplicate edges, cycles) are enforced when emissions are applied, atomically.
+
 Failures produce explicit error events. State already committed before failure remains intact.
 
 ## Spec Kit
