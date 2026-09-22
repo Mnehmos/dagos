@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kiss://schemas/dag/v1",
+  "title": "DAGOS DAG Node v1",
+  "type": "object",
+  "required": ["id", "type", "payload"],
+  "properties": {
+    "id": {"type": "string"},
+    "type": {"enum": ["task", "artifact", "observation", "decision", "result", "conversation"]},
+    "payload": {"type": "object"},
+    "created_at": {"type": "string"},
+    "updated_at": {"type": "string"}
+  },
+  "additionalProperties": false
+}
