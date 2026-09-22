@@ -17,8 +17,8 @@
 
 ## Jev
 - [x] T012 Define Jev classification contract.
-- [ ] T013 Implement Jev adapter trait.
-- [ ] T014 Implement deterministic fake Jev.
+- [x] T013 Implement Jev adapter trait.
+- [x] T014 Implement deterministic fake Jev.
 - [ ] T015 Apply classifications to active context.
 - [ ] T016 Reject output outside the classification contract.
 

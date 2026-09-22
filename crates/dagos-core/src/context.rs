@@ -4,3 +4,9 @@
 //! node classifications. It never plans, routes, selects providers, executes tools, or acts.
 //! Applying classifications changes active-context membership only; durable DAG nodes are never
 //! modified or deleted by this layer.
+
+mod fake_jev;
+mod jev;
+
+pub use fake_jev::{DEFAULT_CONVERSATION_WINDOW, FakeJev};
+pub use jev::{JevClassifier, JevError};
