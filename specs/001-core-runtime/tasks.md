@@ -9,8 +9,8 @@
 
 ## Durable DAG
 - [x] T006 Implement DagNode and DagEdge types.
-- [ ] T007 Implement node persistence.
-- [ ] T008 Implement edge persistence.
+- [x] T007 Implement node persistence.
+- [x] T008 Implement edge persistence.
 - [ ] T009 Implement Run and Event persistence.
 - [ ] T010 Implement ActiveContext persistence.
 - [ ] T011 Test DAG and active-context invariants transactionally.

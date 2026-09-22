@@ -45,10 +45,7 @@ pub struct SequentialIds {
 
 impl IdGenerator for SequentialIds {
     fn next_suffix(&self, prefix: &str) -> String {
-        let mut counters = self
-            .counters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut counters = self.counters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let counter = counters.entry(prefix.to_owned()).or_insert(0);
         *counter += 1;
         format!("{counter:06}")
@@ -57,9 +54,7 @@ impl IdGenerator for SequentialIds {
 
 fn is_valid_suffix(suffix: &str) -> bool {
     (1..=64).contains(&suffix.len())
-        && suffix
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && suffix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
 }
 
 macro_rules! define_id {

@@ -65,14 +65,7 @@ impl Contract {
                 format!("at {at}: {error}")
             })
             .collect();
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(ContractViolation {
-                contract: self,
-                errors,
-            })
-        }
+        if errors.is_empty() { Ok(()) } else { Err(ContractViolation { contract: self, errors }) }
     }
 }
 
@@ -133,15 +126,9 @@ mod tests {
             let schema: Value = serde_json::from_str(contract.schema_source()).unwrap();
             jsonschema::meta::validate(&schema)
                 .unwrap_or_else(|error| panic!("{contract:?} is not a valid schema: {error}"));
-            assert_eq!(
-                schema["$schema"],
-                "https://json-schema.org/draft/2020-12/schema"
-            );
+            assert_eq!(schema["$schema"], "https://json-schema.org/draft/2020-12/schema");
             let id = contract.schema_id();
-            assert!(
-                id.starts_with("kiss://schemas/") && id.ends_with("/v1"),
-                "{id}"
-            );
+            assert!(id.starts_with("kiss://schemas/") && id.ends_with("/v1"), "{id}");
         }
     }
 

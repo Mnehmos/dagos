@@ -24,10 +24,7 @@ pub(crate) fn migrate(conn: &mut Connection, migrations: &[&str]) -> Result<(), 
     let current = schema_version(conn)?;
     let supported = migrations.len() as u32;
     if current > supported {
-        return Err(StoreError::SchemaTooNew {
-            found: current,
-            supported,
-        });
+        return Err(StoreError::SchemaTooNew { found: current, supported });
     }
     for (index, sql) in migrations.iter().enumerate().skip(current as usize) {
         let tx = conn.transaction()?;
@@ -52,9 +49,8 @@ mod tests {
     }
 
     fn schema(conn: &Connection) -> Vec<(String, String, Option<String>)> {
-        let mut statement = conn
-            .prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name")
-            .unwrap();
+        let mut statement =
+            conn.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").unwrap();
         statement
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
             .unwrap()
@@ -75,14 +71,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            [
-                "active_context",
-                "dag_edges",
-                "dag_nodes",
-                "events",
-                "projects",
-                "runs"
-            ]
+            ["active_context", "dag_edges", "dag_nodes", "events", "projects", "runs"]
         );
     }
 
@@ -119,11 +108,9 @@ mod tests {
 
         assert_eq!(schema_version(&conn).unwrap(), 2);
         let (name, description): (String, String) = conn
-            .query_row(
-                "SELECT name, description FROM projects WHERE id = 'proj_1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
+            .query_row("SELECT name, description FROM projects WHERE id = 'proj_1'", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
             .unwrap();
         assert_eq!((name.as_str(), description.as_str()), ("kept", ""));
     }
@@ -134,10 +121,7 @@ mod tests {
         migrate(&mut conn, MIGRATIONS).unwrap();
         let before = schema(&conn);
 
-        let broken = [
-            MIGRATIONS[0],
-            "CREATE TABLE half_done (a TEXT); SELECT no_such_fn();",
-        ];
+        let broken = [MIGRATIONS[0], "CREATE TABLE half_done (a TEXT); SELECT no_such_fn();"];
         assert!(migrate(&mut conn, &broken).is_err());
 
         assert_eq!(schema_version(&conn).unwrap(), 1);
@@ -147,8 +131,7 @@ mod tests {
     #[test]
     fn database_newer_than_this_build_is_rejected() {
         let mut conn = fresh();
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1)
-            .unwrap();
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
         let error = migrate(&mut conn, MIGRATIONS).unwrap_err();
         assert!(matches!(
             error,

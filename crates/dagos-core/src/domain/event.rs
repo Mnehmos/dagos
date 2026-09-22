@@ -27,20 +27,13 @@ pub struct Event {
 pub enum EventData {
     /// A run began with this provider, model, and system prompt.
     #[serde(rename = "run.started")]
-    RunStarted {
-        provider_id: ProviderId,
-        model_id: ModelId,
-        system_prompt: String,
-    },
+    RunStarted { provider_id: ProviderId, model_id: ModelId, system_prompt: String },
     /// The run finished and its results are durable.
     #[serde(rename = "run.completed")]
     RunCompleted {},
     /// The run stopped at an explicit failure. State committed before the failure remains intact.
     #[serde(rename = "run.failed")]
-    RunFailed {
-        error_code: ErrorCode,
-        message: String,
-    },
+    RunFailed { error_code: ErrorCode, message: String },
 }
 
 impl EventData {

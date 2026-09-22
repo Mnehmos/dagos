@@ -20,18 +20,7 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("ir", &["domain", "contracts", "store"]),
     ("provider", &["domain"]),
     ("response", &["domain", "contracts"]),
-    (
-        "runtime",
-        &[
-            "domain",
-            "contracts",
-            "store",
-            "context",
-            "ir",
-            "provider",
-            "response",
-        ],
-    ),
+    ("runtime", &["domain", "contracts", "store", "context", "ir", "provider", "response"]),
 ];
 
 /// Crates that would pull transport or provider-SDK concerns into the core.
@@ -90,9 +79,7 @@ fn crate_references(source: &str) -> Vec<String> {
                 if rest.starts_with('{') {
                     "{".to_string()
                 } else {
-                    rest.chars()
-                        .take_while(|c| c.is_alphanumeric() || *c == '_')
-                        .collect()
+                    rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect()
                 }
             })
         })
@@ -103,10 +90,8 @@ fn crate_references(source: &str) -> Vec<String> {
 fn every_declared_module_has_a_boundary_rule() {
     let lib = fs::read_to_string(manifest_dir().join("src/lib.rs")).expect("read lib.rs");
     for line in lib.lines() {
-        let Some(module) = line
-            .trim()
-            .strip_prefix("pub mod ")
-            .and_then(|rest| rest.strip_suffix(';'))
+        let Some(module) =
+            line.trim().strip_prefix("pub mod ").and_then(|rest| rest.strip_suffix(';'))
         else {
             continue;
         };
@@ -125,9 +110,7 @@ fn layers_only_reference_allowed_layers() {
             let source = fs::read_to_string(&file).expect("read source file");
             let shown = file.display();
             if source.contains("super::super") {
-                violations.push(format!(
-                    "{shown}: uses `super::super`; use a `crate::` path"
-                ));
+                violations.push(format!("{shown}: uses `super::super`; use a `crate::` path"));
             }
             for referenced in crate_references(&source) {
                 if referenced == "{" {

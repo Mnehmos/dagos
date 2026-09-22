@@ -96,14 +96,8 @@ fn edges_reject_self_loops_duplicates_and_unknown_types() {
 fn nodes_require_a_known_type_and_a_json_object_payload() {
     let store = seeded();
     let conn = store.lock();
-    rejects(
-        &conn,
-        "INSERT INTO dag_nodes VALUES ('node_x', 'proj_a', 'plan', '{}', 't', 't')",
-    );
-    rejects(
-        &conn,
-        "INSERT INTO dag_nodes VALUES ('node_x', 'proj_a', 'task', '[1,2]', 't', 't')",
-    );
+    rejects(&conn, "INSERT INTO dag_nodes VALUES ('node_x', 'proj_a', 'plan', '{}', 't', 't')");
+    rejects(&conn, "INSERT INTO dag_nodes VALUES ('node_x', 'proj_a', 'task', '[1,2]', 't', 't')");
     rejects(
         &conn,
         "INSERT INTO dag_nodes VALUES ('node_x', 'proj_a', 'task', 'not json', 't', 't')",
@@ -132,13 +126,9 @@ fn removing_an_active_context_row_never_deletes_the_node() {
         "INSERT INTO active_context VALUES ('run_1', 'node_a1', 'active', 0, 'jev')",
     )
     .unwrap();
-    conn.execute_batch("DELETE FROM active_context WHERE node_id = 'node_a1'")
-        .unwrap();
+    conn.execute_batch("DELETE FROM active_context WHERE node_id = 'node_a1'").unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM active_context"), 0);
-    assert_eq!(
-        count(&conn, "SELECT count(*) FROM dag_nodes WHERE id = 'node_a1'"),
-        1
-    );
+    assert_eq!(count(&conn, "SELECT count(*) FROM dag_nodes WHERE id = 'node_a1'"), 1);
 }
 
 #[test]
@@ -149,10 +139,7 @@ fn active_context_rows_are_constrained() {
         &conn,
         "INSERT INTO active_context VALUES ('run_1', 'node_missing', 'active', 0, 'jev')",
     );
-    rejects(
-        &conn,
-        "INSERT INTO active_context VALUES ('run_1', 'node_a1', 'inactive', 0, 'jev')",
-    );
+    rejects(&conn, "INSERT INTO active_context VALUES ('run_1', 'node_a1', 'inactive', 0, 'jev')");
     rejects(
         &conn,
         "INSERT INTO active_context VALUES ('run_1', 'node_a1', 'active', 0, 'planner')",
@@ -161,10 +148,7 @@ fn active_context_rows_are_constrained() {
         "INSERT INTO active_context VALUES ('run_1', 'node_a1', 'active', 0, 'jev')",
     )
     .unwrap();
-    rejects(
-        &conn,
-        "INSERT INTO active_context VALUES ('run_1', 'node_a2', 'active', 0, 'jev')",
-    );
+    rejects(&conn, "INSERT INTO active_context VALUES ('run_1', 'node_a2', 'active', 0, 'jev')");
 }
 
 #[test]
@@ -187,14 +171,8 @@ fn at_most_one_run_per_project_is_running() {
 fn run_status_agrees_with_completion_fields_and_identity_is_required() {
     let store = seeded();
     let conn = store.lock();
-    rejects(
-        &conn,
-        "UPDATE runs SET status = 'completed' WHERE id = 'run_1'",
-    );
-    rejects(
-        &conn,
-        "UPDATE runs SET status = 'failed', completed_at = 't9' WHERE id = 'run_1'",
-    );
+    rejects(&conn, "UPDATE runs SET status = 'completed' WHERE id = 'run_1'");
+    rejects(&conn, "UPDATE runs SET status = 'failed', completed_at = 't9' WHERE id = 'run_1'");
     rejects(&conn, "UPDATE runs SET provider_id = '' WHERE id = 'run_1'");
     rejects(&conn, "UPDATE runs SET model_id = '' WHERE id = 'run_1'");
     conn.execute_batch(
@@ -210,14 +188,8 @@ fn event_sequences_are_unique_positive_and_history_is_append_only() {
     let conn = store.lock();
     conn.execute_batch("INSERT INTO events VALUES ('evt_1', 'run_1', 1, 'run.started', '{}', 't')")
         .unwrap();
-    rejects(
-        &conn,
-        "INSERT INTO events VALUES ('evt_2', 'run_1', 1, 'run.started', '{}', 't')",
-    );
-    rejects(
-        &conn,
-        "INSERT INTO events VALUES ('evt_2', 'run_1', 0, 'run.started', '{}', 't')",
-    );
+    rejects(&conn, "INSERT INTO events VALUES ('evt_2', 'run_1', 1, 'run.started', '{}', 't')");
+    rejects(&conn, "INSERT INTO events VALUES ('evt_2', 'run_1', 0, 'run.started', '{}', 't')");
     rejects(
         &conn,
         "INSERT INTO events VALUES ('evt_2', 'run_missing', 1, 'run.started', '{}', 't')",

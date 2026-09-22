@@ -28,10 +28,7 @@ impl ProviderId {
     pub fn parse(value: impl Into<String>) -> Result<Self, IdentityError> {
         let value = value.into();
         let valid = (1..=64).contains(&value.len())
-            && value
-                .bytes()
-                .next()
-                .is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            && value.bytes().next().is_some_and(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
             && value.bytes().all(|b| {
                 b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-')
             });
@@ -185,24 +182,10 @@ mod tests {
 
     #[test]
     fn provider_ids_are_validated() {
-        for valid in [
-            "fake",
-            "openai-compatible",
-            "z.ai",
-            "open_router",
-            "a",
-            "4o",
-        ] {
+        for valid in ["fake", "openai-compatible", "z.ai", "open_router", "a", "4o"] {
             assert!(ProviderId::parse(valid).is_ok(), "{valid}");
         }
-        for invalid in [
-            "",
-            "Fake",
-            "-fake",
-            "open router",
-            "fake/1",
-            &"a".repeat(65),
-        ] {
+        for invalid in ["", "Fake", "-fake", "open router", "fake/1", &"a".repeat(65)] {
             assert!(ProviderId::parse(invalid).is_err(), "{invalid}");
         }
     }

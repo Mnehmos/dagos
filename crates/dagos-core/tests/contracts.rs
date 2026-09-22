@@ -24,9 +24,7 @@ fn serialized_dag_nodes_satisfy_the_node_contract() {
     for node_type in NodeType::ALL {
         let mut node = node();
         node.node_type = *node_type;
-        Contract::DagNode
-            .validate(&serde_json::to_value(&node).unwrap())
-            .unwrap();
+        Contract::DagNode.validate(&serde_json::to_value(&node).unwrap()).unwrap();
     }
 }
 
@@ -46,17 +44,11 @@ fn node_contract_and_domain_type_reject_the_same_documents() {
         cases.push(document);
     }
     let mut missing_timestamp = valid.clone();
-    missing_timestamp
-        .as_object_mut()
-        .unwrap()
-        .remove("updated_at");
+    missing_timestamp.as_object_mut().unwrap().remove("updated_at");
     cases.push(missing_timestamp);
 
     for document in cases {
-        assert!(
-            Contract::DagNode.validate(&document).is_err(),
-            "contract accepted {document}"
-        );
+        assert!(Contract::DagNode.validate(&document).is_err(), "contract accepted {document}");
         assert!(
             serde_json::from_value::<DagNode>(document.clone()).is_err(),
             "domain type accepted {document}"

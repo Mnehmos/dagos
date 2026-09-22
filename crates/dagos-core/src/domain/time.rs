@@ -46,15 +46,9 @@ impl Timestamp {
         if bytes.len() != 24 {
             return Err(invalid());
         }
-        for (index, expected) in [
-            (4, b'-'),
-            (7, b'-'),
-            (10, b'T'),
-            (13, b':'),
-            (16, b':'),
-            (19, b'.'),
-            (23, b'Z'),
-        ] {
+        for (index, expected) in
+            [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':'), (19, b'.'), (23, b'Z')]
+        {
             if bytes[index] != expected {
                 return Err(invalid());
             }
@@ -80,11 +74,7 @@ impl Timestamp {
         let total = days * MILLIS_PER_DAY + ((hour * 60 + minute) * 60 + second) * 1000 + millis;
         let timestamp = Self::from_unix_millis(total).map_err(|_| invalid())?;
         // Day overflow (e.g. February 30th) survives the range checks above but cannot round-trip.
-        if timestamp.to_string() == text {
-            Ok(timestamp)
-        } else {
-            Err(invalid())
-        }
+        if timestamp.to_string() == text { Ok(timestamp) } else { Err(invalid()) }
     }
 }
 
@@ -95,10 +85,7 @@ impl fmt::Display for Timestamp {
         let (year, month, day) = civil_from_days(days);
         let (hour, minute) = (in_day / 3_600_000, in_day / 60_000 % 60);
         let (second, millis) = (in_day / 1000 % 60, in_day % 1000);
-        write!(
-            f,
-            "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z"
-        )
+        write!(f, "{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
     }
 }
 
@@ -136,11 +123,7 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_index = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_index + 2) / 5 + 1;
-    let month = if month_index < 10 {
-        month_index + 3
-    } else {
-        month_index - 9
-    };
+    let month = if month_index < 10 { month_index + 3 } else { month_index - 9 };
     let year = year_of_era + era * 400 + i64::from(month <= 2);
     (year, month, day)
 }
@@ -174,10 +157,7 @@ pub struct SteppingClock {
 
 impl SteppingClock {
     pub fn new(start: Timestamp, step_millis: i64) -> Self {
-        Self {
-            next: AtomicI64::new(start.unix_millis()),
-            step_millis,
-        }
+        Self { next: AtomicI64::new(start.unix_millis()), step_millis }
     }
 }
 
@@ -198,14 +178,9 @@ mod tests {
 
     #[test]
     fn formats_known_instants() {
+        assert_eq!(Timestamp::from_unix_millis(0).unwrap().to_string(), "1970-01-01T00:00:00.000Z");
         assert_eq!(
-            Timestamp::from_unix_millis(0).unwrap().to_string(),
-            "1970-01-01T00:00:00.000Z"
-        );
-        assert_eq!(
-            Timestamp::from_unix_millis(1_790_104_774_123)
-                .unwrap()
-                .to_string(),
+            Timestamp::from_unix_millis(1_790_104_774_123).unwrap().to_string(),
             "2026-09-22T19:19:34.123Z"
         );
         assert_eq!(
