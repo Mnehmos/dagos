@@ -10,6 +10,7 @@ use dagos_core::domain::{
     RunId,
 };
 use dagos_core::store::{Store, StoreError};
+use dagos_mcp::Capabilities;
 use serde::Serialize;
 
 use crate::workspace::Workspace;
@@ -23,6 +24,8 @@ pub struct Overview {
     pub providers: Vec<ProviderInfo>,
     /// The Jev classifier in use.
     pub jev: String,
+    /// MCP capabilities compiled into new runs' IR, when this process discovered them.
+    pub capabilities: Option<Capabilities>,
     /// The durable DAG.
     pub dag: DagView,
     /// Every run, oldest first.
@@ -122,6 +125,7 @@ pub fn overview(workspace: &Workspace) -> Result<Overview, StoreError> {
         run_defaults,
         providers,
         jev: workspace.runtime.jev().id().to_owned(),
+        capabilities: workspace.capabilities.clone(),
         dag,
         runs,
     })

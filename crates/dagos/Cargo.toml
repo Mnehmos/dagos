@@ -10,6 +10,7 @@ repository.workspace = true
 axum = "0.8.9"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 dagos-core = { path = "../dagos-core" }
+dagos-mcp = { path = "../dagos-mcp" }
 dagos-openai = { path = "../dagos-openai" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

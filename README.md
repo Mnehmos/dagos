@@ -64,13 +64,27 @@ them. Then, for example:
 cargo run -p dagos -- run "Summarize the open tasks" --provider openrouter --model <model id>
 ```
 
+### MCP (optional)
+
+DAGOS never needs MCP. To describe MCP tools to models, list stdio servers in `.dagos/mcp.json`:
+
+```json
+{"servers": [{"id": "files", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}]}
+```
+
+(On Windows use `npx.cmd`.) `dagos run` and `dagos serve` ask each server for its tools and compile
+them into the IR's `tools` as `<id>.<tool>` descriptions. They are descriptive only: DAGOS v0.1
+records requested `tool_calls` but never executes them. A server that is missing, crashes, hangs, or
+misbehaves is reported as a warning and skipped, and the run proceeds without its tools.
+
 ## Layout
 
 | path                  | role                                                                   |
 |-----------------------|------------------------------------------------------------------------|
 | `crates/dagos-core`   | domain, contracts, store, context (Jev), IR, provider trait, runtime   |
 | `crates/dagos-openai` | inference adapter for OpenAI-compatible endpoints (OpenRouter, Ollama) |
-| `crates/dagos`        | transport: the `dagos` command-line interface                          |
+| `crates/dagos-mcp`    | optional MCP tool discovery, compiled into IR capability descriptions  |
+| `crates/dagos`        | transport: CLI, workspace setup, inspection views, local HTTP API      |
 
 `dagos-core` never depends on HTTP stacks or provider SDKs; `crates/dagos-core/tests/boundaries.rs`
 enforces the layer rules. Real providers live in their own crates and implement the core's

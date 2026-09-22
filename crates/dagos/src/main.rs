@@ -206,7 +206,10 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Serve { address } => {
-            let workspace = Arc::new(Workspace::open(&cli.dir, None, timeout)?);
+            let workspace = Workspace::open(&cli.dir, None, timeout)?
+                .with_mcp_capabilities(&cli.dir, |warning| eprintln!("warning: {warning}"))
+                .await?;
+            let workspace = Arc::new(workspace);
             let listener = tokio::net::TcpListener::bind(&address)
                 .await
                 .map_err(|error| format!("cannot listen on {address}: {error}"))?;
@@ -266,7 +269,9 @@ async fn run(dir: &std::path::Path, args: RunArgs, timeout: Duration) -> Result<
             let _ = stdout.flush();
         }))
     };
-    let workspace = Workspace::open(dir, listener, timeout)?;
+    let workspace = Workspace::open(dir, listener, timeout)?
+        .with_mcp_capabilities(dir, |warning| eprintln!("warning: {warning}"))
+        .await?;
     let config = args.selection.apply(workspace.run_config().map_err(|e| e.to_string())?)?;
     let run = workspace
         .runtime

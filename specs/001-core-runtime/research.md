@@ -17,3 +17,4 @@ Failures produce explicit error events. State already committed before failure r
 
 ## Spec Kit
 The current Spec Kit workflow is constitution, specify, clarify, plan, checklist, tasks, analyze, implement, and converge. The full quality-gated path is appropriate for DAGOS because the architecture has meaningful boundaries and invariants.
+MCP is an optional capability boundary. A workspace may list stdio MCP servers; DAGOS asks each for its tools (`initialize`, `tools/list`) with a per-server time limit and compiles the results into IR `tools` as descriptive `<server>.<tool>` entries. Discovery failures are reported and skipped, so runs never depend on MCP. Requested `tool_calls` are recorded in the validated response and never executed in v0.1; no MCP transport or tool semantics enter DAG state or the core.

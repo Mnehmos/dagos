@@ -9,6 +9,7 @@ use dagos_core::domain::{ModelId, Project, ProviderId, RunConfig};
 use dagos_core::provider::FakeProvider;
 use dagos_core::runtime::Runtime;
 use dagos_core::store::{EventListener, Store, StoreError};
+use dagos_mcp::{Capabilities, McpConfig};
 
 use crate::providers;
 
@@ -29,11 +30,19 @@ pub fn default_run_config() -> RunConfig {
     }
 }
 
+/// The optional MCP configuration inside the DAGOS directory.
+pub const MCP_FILE: &str = "mcp.json";
+
+/// How long each MCP server may take to describe its tools.
+const MCP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// An opened workspace: its store, its project, and a runtime with the configured providers.
 pub struct Workspace {
     pub store: Arc<Store>,
     pub project: Project,
     pub runtime: Runtime,
+    /// MCP capabilities discovered by this process, if discovery ran (`run` and `serve` do).
+    pub capabilities: Option<Capabilities>,
 }
 
 impl Workspace {
@@ -69,7 +78,30 @@ impl Workspace {
         for provider in providers {
             runtime = runtime.with_provider(provider);
         }
-        Ok(Self { store, project, runtime })
+        Ok(Self { store, project, runtime, capabilities: None })
+    }
+
+    /// Discovers MCP capabilities from `mcp.json` in `dir` and compiles them into every
+    /// subsequent run's IR. Without the file, or with every server unavailable, runs simply have
+    /// no tools; `warn` hears about each server that could not be used.
+    pub async fn with_mcp_capabilities(
+        mut self,
+        dir: &Path,
+        mut warn: impl FnMut(String),
+    ) -> Result<Self, String> {
+        let Some(config) = McpConfig::load(&dir.join(MCP_FILE))? else { return Ok(self) };
+        let capabilities = dagos_mcp::discover(&config, MCP_DISCOVERY_TIMEOUT).await;
+        for server in &capabilities.servers {
+            if let Some(error) = &server.error {
+                warn(format!(
+                    "MCP server `{}` unavailable, continuing without it: {error}",
+                    server.id
+                ));
+            }
+        }
+        self.runtime = self.runtime.with_tools(capabilities.tools.clone());
+        self.capabilities = Some(capabilities);
+        Ok(self)
     }
 
     /// The configuration new runs use: the project's defaults, or the built-in default.

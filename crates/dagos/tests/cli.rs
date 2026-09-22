@@ -148,3 +148,21 @@ fn inspect_prints_recorded_state_as_json() {
     assert_eq!(missing.status.code(), Some(2));
     assert!(stderr(&missing).contains("run `run_nope` not found"));
 }
+
+#[test]
+fn runs_succeed_when_configured_mcp_servers_are_unavailable() {
+    let (_root, dir) = workspace();
+    let config = r#"{"servers": [{"id": "offline", "command": "dagos-no-such-mcp-server"}]}"#;
+    std::fs::write(dir.join("mcp.json"), config).unwrap();
+
+    let run = dagos(&dir, &["run", "hello"]);
+    assert_eq!(run.status.code(), Some(0), "{}", stderr(&run));
+    assert!(stderr(&run).contains("MCP server `offline` unavailable"), "{}", stderr(&run));
+    let ir = json(&dagos(&dir, &["inspect", "ir"]));
+    assert!(ir.get("tools").is_none(), "no tools reach the IR when MCP is unavailable");
+
+    std::fs::write(dir.join("mcp.json"), "not json").unwrap();
+    let broken = dagos(&dir, &["run", "hello"]);
+    assert_eq!(broken.status.code(), Some(2));
+    assert!(stderr(&broken).contains("invalid"), "{}", stderr(&broken));
+}
