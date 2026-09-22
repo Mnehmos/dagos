@@ -8,6 +8,7 @@
 //! keys (payloads) in sorted order, so identical values always produce identical JSON.
 
 mod context;
+mod conversation;
 mod dag;
 mod event;
 mod ids;
@@ -19,6 +20,7 @@ mod schema;
 mod time;
 
 pub use context::{Classification, ContextMember, ContextSource};
+pub use conversation::{ConversationTurn, Role};
 pub use dag::{DagEdge, DagNode, EdgeType, NodeType, Payload, UnknownVariant};
 pub use event::{Event, EventData};
 pub use ids::{

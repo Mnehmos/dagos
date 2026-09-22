@@ -18,6 +18,7 @@ mod projects;
 mod runs;
 mod sql;
 
+use std::cell::Cell;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -107,6 +108,7 @@ impl Store {
 
     /// The schema version recorded in the database.
     pub fn schema_version(&self) -> Result<u32, StoreError> {
+        let _entered = Entered::new();
         Ok(migrations::schema_version(&self.lock())?)
     }
 
@@ -114,10 +116,15 @@ impl Store {
     ///
     /// Transactions start `IMMEDIATE`, taking the write lock up front, so concurrent DAGOS
     /// processes wait on each other (up to the busy timeout) instead of failing mid-transaction.
+    ///
+    /// # Panics
+    /// If called from inside another transaction on the same thread, which would otherwise
+    /// deadlock: do the work with the outer transaction's [`Tx`] instead.
     pub fn transaction<T, E>(&self, work: impl FnOnce(&Tx<'_>) -> Result<T, E>) -> Result<T, E>
     where
         E: From<StoreError>,
     {
+        let _entered = Entered::new();
         let mut conn = self.lock();
         let transaction = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -132,6 +139,32 @@ impl Store {
         // A panic while holding the lock drops any open transaction, which rolls it back, so the
         // connection is still consistent and safe to reuse.
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+thread_local! {
+    static IN_STORE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Marks the current thread as inside the store for its lifetime. The store's mutex is not
+/// reentrant, so re-entering from the same thread would deadlock; this turns that into a panic.
+struct Entered;
+
+impl Entered {
+    fn new() -> Self {
+        assert!(
+            !IN_STORE.get(),
+            "Store::transaction called while this thread is already inside the store; \
+             nesting would deadlock, so use the outer transaction's Tx instead"
+        );
+        IN_STORE.set(true);
+        Entered
+    }
+}
+
+impl Drop for Entered {
+    fn drop(&mut self) {
+        IN_STORE.set(false);
     }
 }
 

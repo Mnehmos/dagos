@@ -24,8 +24,8 @@
 
 ## IR
 - [x] T017 Define inference IR v1.
-- [ ] T018 Implement deterministic IR compiler.
-- [ ] T019 Add IR snapshot tests.
+- [x] T018 Implement deterministic IR compiler.
+- [x] T019 Add IR snapshot tests.
 - [ ] T020 Prove providers receive IR only.
 
 ## Provider Runtime

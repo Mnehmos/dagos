@@ -27,3 +27,17 @@ pub fn payload(value: Value) -> Payload {
         other => panic!("payload must be a JSON object, got {other}"),
     }
 }
+
+/// Compares `actual` with `tests/snapshots/<name>`. Run with `UPDATE_SNAPSHOTS=1` to (re)write
+/// snapshots; review the diff before committing.
+pub fn assert_snapshot(name: &str, actual: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots").join(name);
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual).unwrap();
+    }
+    let expected = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+        panic!("missing snapshot {}; run with UPDATE_SNAPSHOTS=1 to create it", path.display())
+    });
+    assert_eq!(actual, expected, "snapshot {name} changed; run with UPDATE_SNAPSHOTS=1 to accept");
+}

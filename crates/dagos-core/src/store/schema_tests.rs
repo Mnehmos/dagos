@@ -199,3 +199,20 @@ fn event_sequences_are_unique_positive_and_history_is_append_only() {
     let error = rejects(&conn, "DELETE FROM events WHERE id = 'evt_1'");
     assert!(error.contains("append-only"), "{error}");
 }
+
+#[test]
+#[should_panic(expected = "already inside the store")]
+fn nested_transactions_panic_instead_of_deadlocking() {
+    let store = Store::open_in_memory().unwrap();
+    let _ = store.transaction(|_outer| store.transaction(|inner| inner.projects()));
+}
+
+#[test]
+fn the_store_is_usable_after_a_panicking_transaction() {
+    let store = Store::open_in_memory().unwrap();
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = store.transaction(|_outer| store.transaction(|inner| inner.projects()));
+    }));
+    assert!(panicked.is_err());
+    assert!(store.transaction(|tx| tx.projects()).unwrap().is_empty());
+}
