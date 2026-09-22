@@ -1,0 +1,279 @@
+//! The OpenAI-compatible adapter against a local mock endpoint: request formatting, streaming,
+//! error mapping, and a full DAGOS run through the common provider interface. No network needed.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use dagos_core::context::FakeJev;
+use dagos_core::domain::{
+    ErrorCode, EventData, InferenceIr, InferenceIrSchema, IrTask, ModelId, NodeId, NodeType,
+    ProviderId, RunConfig, RunStatus,
+};
+use dagos_core::provider::{CollectDeltas, InferenceProvider, InferenceRequest, ProviderError};
+use dagos_core::runtime::Runtime;
+use dagos_core::store::Store;
+use dagos_openai::{OpenAiCompatible, OpenAiCompatibleConfig};
+use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinHandle;
+
+/// What the mock endpoint received.
+struct Captured {
+    head: String,
+    body: Value,
+}
+
+/// Serves one HTTP response (written in `parts`, so the client sees several chunks) and returns
+/// the base URL plus a handle yielding the captured request.
+async fn mock(
+    status: &str,
+    content_type: &str,
+    parts: Vec<String>,
+) -> (String, JoinHandle<Captured>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let head =
+        format!("HTTP/1.1 {status}\r\ncontent-type: {content_type}\r\nconnection: close\r\n\r\n");
+    let handle = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let captured = read_request(&mut socket).await;
+        socket.write_all(head.as_bytes()).await.unwrap();
+        for part in parts {
+            socket.write_all(part.as_bytes()).await.unwrap();
+            socket.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        socket.shutdown().await.ok();
+        captured
+    });
+    (base_url, handle)
+}
+
+async fn read_request(socket: &mut TcpStream) -> Captured {
+    let mut buffer = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let read = socket.read(&mut chunk).await.unwrap();
+        assert!(read > 0, "client closed the connection early");
+        buffer.extend_from_slice(&chunk[..read]);
+        let Some(end) = buffer.windows(4).position(|window| window == b"\r\n\r\n") else {
+            continue;
+        };
+        let head = String::from_utf8_lossy(&buffer[..end]).to_string();
+        let length: usize = head
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase().strip_prefix("content-length:").map(str::to_owned)
+            })
+            .map_or(0, |value| value.trim().parse().unwrap());
+        while buffer.len() < end + 4 + length {
+            let read = socket.read(&mut chunk).await.unwrap();
+            buffer.extend_from_slice(&chunk[..read]);
+        }
+        let body = serde_json::from_slice(&buffer[end + 4..end + 4 + length]).unwrap();
+        return Captured { head, body };
+    }
+}
+
+/// SSE chunks streaming `pieces` as Chat Completions content deltas, with a keep-alive comment.
+fn sse(pieces: &[&str]) -> Vec<String> {
+    let mut parts = vec![": keep-alive\n\n".to_owned()];
+    parts.push("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n".to_owned());
+    for piece in pieces {
+        let event = json!({"choices": [{"delta": {"content": piece}}]});
+        parts.push(format!("data: {event}\n\n"));
+    }
+    parts.push("data: [DONE]\n\n".to_owned());
+    parts
+}
+
+fn provider(base_url: &str, json_mode: bool) -> OpenAiCompatible {
+    OpenAiCompatible::new(OpenAiCompatibleConfig {
+        id: ProviderId::parse("mock").unwrap(),
+        base_url: base_url.to_owned(),
+        api_key: Some("test-key".into()),
+        models: vec![ModelId::parse("mock-1").unwrap()],
+        json_mode,
+    })
+}
+
+fn ir() -> InferenceIr {
+    InferenceIr {
+        schema: InferenceIrSchema,
+        system_prompt: "Answer tersely.".into(),
+        task: IrTask { node_id: NodeId::parse("node_000001").unwrap(), message: "Status?".into() },
+        context: vec![],
+        recent_events: vec![],
+        tools: vec![],
+    }
+}
+
+const DOCUMENT: &str = r#"{"schema":"kiss.inference-response.v1","presentation":{"prose":"All green."},"emissions":[{"kind":"node","ref":"d1","type":"decision","payload":{"text":"Keep SQLite"}},{"kind":"node","ref":"t1","type":"task","payload":{"title":"Add restart tests"}},{"kind":"edge","from":"t1","to":"d1","type":"depends_on"}]}"#;
+
+fn pieces(document: &str, size: usize) -> Vec<String> {
+    let chars: Vec<char> = document.chars().collect();
+    chars.chunks(size).map(|chunk| chunk.iter().collect()).collect()
+}
+
+#[tokio::test]
+async fn streams_prose_and_returns_the_raw_document() {
+    let chunks = pieces(DOCUMENT, 7);
+    let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+    let (base_url, request) = mock("200 OK", "text/event-stream", sse(&chunk_refs)).await;
+    let ir = ir();
+    let model = ModelId::parse("mock-1").unwrap();
+    let mut deltas = CollectDeltas::default();
+    let output = provider(&base_url, true)
+        .infer(InferenceRequest { model_id: &model, ir: &ir }, &mut deltas)
+        .await
+        .unwrap();
+
+    assert_eq!(output, DOCUMENT, "the raw document is returned verbatim for validation");
+    assert_eq!(deltas.0.concat(), "All green.", "only presentation prose streams");
+    assert!(deltas.0.len() > 1, "prose streamed incrementally");
+
+    let captured = request.await.unwrap();
+    assert!(captured.head.starts_with("POST /v1/chat/completions HTTP/1.1"), "{}", captured.head);
+    assert!(captured.head.to_ascii_lowercase().contains("authorization: bearer test-key"));
+    assert_eq!(captured.body["model"], "mock-1");
+    assert_eq!(captured.body["stream"], true);
+    assert_eq!(captured.body["response_format"], json!({"type": "json_object"}));
+    let system = captured.body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.starts_with("Answer tersely.\n\nYou are the inference endpoint of DAGOS"));
+    assert!(system.contains("kiss://schemas/inference-response/v1"));
+    // The model's input is the compiled IR itself.
+    let user: Value =
+        serde_json::from_str(captured.body["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(user, serde_json::to_value(&ir).unwrap());
+}
+
+async fn call(base_url: String) -> Result<String, ProviderError> {
+    let (ir, model) = (ir(), ModelId::parse("mock-1").unwrap());
+    provider(&base_url, false)
+        .infer(InferenceRequest { model_id: &model, ir: &ir }, &mut CollectDeltas::default())
+        .await
+}
+
+#[tokio::test]
+async fn http_errors_stream_errors_and_unreachable_endpoints_fail_cleanly() {
+    let body = r#"{"error":{"message":"invalid api key"}}"#.to_owned();
+    let (base_url, request) = mock("401 Unauthorized", "application/json", vec![body]).await;
+    let error = call(base_url).await.unwrap_err();
+    assert!(
+        matches!(&error, ProviderError::Failed(message) if message.contains("HTTP 401") && message.contains("invalid api key")),
+        "{error}"
+    );
+    assert!(request.await.unwrap().body.get("response_format").is_none(), "json mode off");
+
+    let stream_error = vec!["data: {\"error\":{\"message\":\"overloaded\"}}\n\n".to_owned()];
+    let (base_url, _) = mock("200 OK", "text/event-stream", stream_error).await;
+    let error = call(base_url).await.unwrap_err();
+    assert!(
+        matches!(&error, ProviderError::Failed(message) if message.contains("overloaded")),
+        "{error}"
+    );
+
+    let closed = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", closed.local_addr().unwrap());
+    drop(closed);
+    assert!(matches!(call(base_url).await, Err(ProviderError::Failed(_))));
+}
+
+fn setup_runtime(base_url: &str) -> (Arc<Store>, Runtime) {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let runtime = Runtime::new(store.clone(), Arc::new(FakeJev::new()))
+        .with_provider(Arc::new(provider(base_url, true)))
+        .with_inference_timeout(Duration::from_secs(10));
+    (store, runtime)
+}
+
+fn config() -> RunConfig {
+    RunConfig {
+        provider_id: ProviderId::parse("mock").unwrap(),
+        model_id: ModelId::parse("mock-1").unwrap(),
+        system_prompt: "Answer tersely.".into(),
+    }
+}
+
+#[tokio::test]
+async fn a_dagos_run_completes_through_the_real_adapter_with_the_core_unchanged() {
+    let chunks = pieces(DOCUMENT, 11);
+    let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+    let (base_url, _) = mock("200 OK", "text/event-stream", sse(&chunk_refs)).await;
+    let (store, runtime) = setup_runtime(&base_url);
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+
+    let run = runtime.run(&project, "Status?", &config()).await.unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+    assert_eq!((run.provider_id.as_str(), run.model_id.as_str()), ("mock", "mock-1"));
+    let nodes = store.transaction(|tx| tx.nodes(&project)).unwrap();
+    let types: Vec<NodeType> = nodes.iter().map(|node| node.node_type).collect();
+    assert_eq!(types, [NodeType::Conversation, NodeType::Decision, NodeType::Task]);
+    assert_eq!(store.transaction(|tx| tx.edges(&project)).unwrap().len(), 1);
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    let streamed: String = events
+        .iter()
+        .filter_map(|event| match &event.data {
+            EventData::InferenceDelta { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(streamed, "All green.");
+}
+
+#[tokio::test]
+async fn endpoint_failures_become_common_runtime_error_events() {
+    let (base_url, _) = mock("500 Internal Server Error", "text/plain", vec!["boom".into()]).await;
+    let (store, runtime) = setup_runtime(&base_url);
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let run = runtime.run(&project, "Status?", &config()).await.unwrap();
+    assert_eq!(run.error_code, Some(ErrorCode::ProviderFailed));
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    let EventData::RunFailed { message, .. } = &events.last().unwrap().data else {
+        panic!("last event must be run.failed")
+    };
+    assert!(message.contains("HTTP 500") && message.contains("boom"), "{message}");
+
+    // Non-JSON model output is a response failure, not a provider failure.
+    let (base_url, _) = mock("200 OK", "text/event-stream", sse(&["Sure! Here you go:"])).await;
+    let (store, runtime) = setup_runtime(&base_url);
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let run = runtime.run(&project, "Status?", &config()).await.unwrap();
+    assert_eq!(run.error_code, Some(ErrorCode::ResponseInvalid));
+}
+
+/// Opt-in live check against a real endpoint:
+/// `DAGOS_LIVE_BASE_URL=https://openrouter.ai/api/v1 DAGOS_LIVE_MODEL=<model>
+///  DAGOS_LIVE_API_KEY=<key> cargo test -p dagos-openai --test mock_endpoint -- --ignored`
+#[tokio::test]
+#[ignore = "needs a live endpoint: set DAGOS_LIVE_BASE_URL and DAGOS_LIVE_MODEL"]
+async fn live_endpoint_completes_a_run() {
+    let (Ok(base_url), Ok(model)) =
+        (std::env::var("DAGOS_LIVE_BASE_URL"), std::env::var("DAGOS_LIVE_MODEL"))
+    else {
+        panic!("set DAGOS_LIVE_BASE_URL and DAGOS_LIVE_MODEL to run the live check");
+    };
+    let live = OpenAiCompatible::new(OpenAiCompatibleConfig {
+        id: ProviderId::parse("live").unwrap(),
+        base_url,
+        api_key: std::env::var("DAGOS_LIVE_API_KEY").ok(),
+        models: vec![],
+        json_mode: std::env::var("DAGOS_LIVE_JSON_MODE").map_or(true, |value| value != "0"),
+    });
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let runtime = Runtime::new(store.clone(), Arc::new(FakeJev::new()))
+        .with_provider(Arc::new(live))
+        .with_inference_timeout(Duration::from_secs(120));
+    let project = store.transaction(|tx| tx.create_project("live")).unwrap().id;
+    let config = RunConfig {
+        provider_id: ProviderId::parse("live").unwrap(),
+        model_id: ModelId::parse(model).unwrap(),
+        system_prompt: "You are a concise coding assistant.".into(),
+    };
+    let message =
+        "Record a decision to use SQLite for durable state, then confirm in one sentence.";
+    let run = runtime.run(&project, message, &config).await.unwrap();
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{:#?}", events.last());
+}

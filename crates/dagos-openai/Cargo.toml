@@ -1,0 +1,19 @@
+[package]
+name = "dagos-openai"
+description = "DAGOS inference adapter for OpenAI-compatible Chat Completions endpoints (OpenRouter, OpenAI, Ollama, ...)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+dagos-core = { path = "../dagos-core" }
+reqwest = "0.13.5"
+serde_json = "1.0.151"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }

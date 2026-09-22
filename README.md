@@ -21,13 +21,21 @@ The design lives in [`.specify/memory/constitution.md`](.specify/memory/constitu
 
 ## Layout
 
-| path                 | role                                                                  |
-|----------------------|-----------------------------------------------------------------------|
-| `crates/dagos-core`  | domain, contracts, store, context (Jev), IR, provider trait, runtime  |
-| `crates/dagos`       | transport: the `dagos` command-line interface                         |
+| path                  | role                                                                   |
+|-----------------------|------------------------------------------------------------------------|
+| `crates/dagos-core`   | domain, contracts, store, context (Jev), IR, provider trait, runtime   |
+| `crates/dagos-openai` | inference adapter for OpenAI-compatible endpoints (OpenRouter, Ollama) |
+| `crates/dagos`        | transport: the `dagos` command-line interface                          |
 
 `dagos-core` never depends on HTTP stacks or provider SDKs; `crates/dagos-core/tests/boundaries.rs`
-enforces the layer rules.
+enforces the layer rules. Real providers live in their own crates and implement the core's
+`InferenceProvider` trait.
+
+To check a real endpoint (opt-in, needs network and usually a key):
+
+```bash
+DAGOS_LIVE_BASE_URL=https://openrouter.ai/api/v1 DAGOS_LIVE_MODEL=<model> DAGOS_LIVE_API_KEY=<key> cargo test -p dagos-openai -- --ignored
+```
 
 ## Development
 

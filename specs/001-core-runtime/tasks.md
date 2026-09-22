@@ -37,9 +37,9 @@
 - [x] T026 Test malformed responses, timeouts, and failure state.
 
 ## First Real Provider
-- [ ] T027 Implement one real provider behind the common interface.
+- [x] T027 Implement one real provider behind the common interface.
 - [ ] T028 Keep provider configuration outside core domain types.
-- [ ] T029 Add opt-in live-provider integration coverage.
+- [x] T029 Add opt-in live-provider integration coverage.
 
 ## Inspector and Release
 - [ ] T030 Implement read-only state inspection.
