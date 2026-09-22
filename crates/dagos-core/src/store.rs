@@ -12,13 +12,14 @@
 
 mod context;
 mod dag;
+mod defaults;
 mod events;
 mod migrations;
 mod projects;
 mod runs;
 mod sql;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -26,8 +27,8 @@ use std::time::Duration;
 use rusqlite::{Connection, TransactionBehavior};
 
 use crate::domain::{
-    Clock, EdgeType, IdGenerator, NodeId, ProjectId, RandomIds, RunId, RunStatus, SystemClock,
-    Timestamp,
+    Clock, EdgeType, Event, IdGenerator, NodeId, ProjectId, RandomIds, RunId, RunStatus,
+    SystemClock, Timestamp,
 };
 
 pub use migrations::SCHEMA_VERSION;
@@ -74,7 +75,11 @@ pub struct Store {
     conn: Mutex<Connection>,
     clock: Box<dyn Clock>,
     ids: Box<dyn IdGenerator>,
+    listener: Option<EventListener>,
 }
+
+/// Receives the events of each committed transaction, in sequence order.
+pub type EventListener = Box<dyn Fn(&[Event]) + Send + Sync>;
 
 impl Store {
     /// Opens (creating if needed) the database at `path` and migrates it to [`SCHEMA_VERSION`].
@@ -91,7 +96,23 @@ impl Store {
         conn.pragma_update(None, "foreign_keys", true)?;
         conn.busy_timeout(Duration::from_secs(5))?;
         migrations::migrate(&mut conn, migrations::MIGRATIONS)?;
-        Ok(Self { conn: Mutex::new(conn), clock: Box::new(SystemClock), ids: Box::new(RandomIds) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+            clock: Box::new(SystemClock),
+            ids: Box::new(RandomIds),
+            listener: None,
+        })
+    }
+
+    /// Calls `listener` after every committed transaction that appended events, with those events
+    /// in order. Events from rolled-back transactions are never observed. The listener runs after
+    /// the store is released, so it may read the store.
+    pub fn with_event_listener(
+        mut self,
+        listener: impl Fn(&[Event]) + Send + Sync + 'static,
+    ) -> Self {
+        self.listener = Some(Box::new(listener));
+        self
     }
 
     /// Replaces the clock used for new records (e.g. a stepping clock in tests).
@@ -124,14 +145,29 @@ impl Store {
     where
         E: From<StoreError>,
     {
-        let _entered = Entered::new();
-        let mut conn = self.lock();
-        let transaction = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(StoreError::from)?;
-        let tx = Tx { conn: transaction, clock: self.clock.as_ref(), ids: self.ids.as_ref() };
-        let value = work(&tx)?;
-        tx.conn.commit().map_err(StoreError::from)?;
+        let entered = Entered::new();
+        let (value, appended) = {
+            let mut conn = self.lock();
+            let transaction = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(StoreError::from)?;
+            let tx = Tx {
+                conn: transaction,
+                clock: self.clock.as_ref(),
+                ids: self.ids.as_ref(),
+                appended: self.listener.as_ref().map(|_| RefCell::default()),
+            };
+            let value = work(&tx)?;
+            let appended = tx.appended.map(RefCell::into_inner).unwrap_or_default();
+            tx.conn.commit().map_err(StoreError::from)?;
+            (value, appended)
+        };
+        drop(entered);
+        if let Some(listener) = &self.listener
+            && !appended.is_empty()
+        {
+            listener(&appended);
+        }
         Ok(value)
     }
 
@@ -173,6 +209,8 @@ pub struct Tx<'a> {
     conn: rusqlite::Transaction<'a>,
     clock: &'a dyn Clock,
     ids: &'a dyn IdGenerator,
+    /// Events appended in this transaction, collected only when a listener wants them.
+    appended: Option<RefCell<Vec<Event>>>,
 }
 
 impl Tx<'_> {

@@ -10,7 +10,10 @@ use rusqlite::Connection;
 use super::StoreError;
 
 /// Every migration shipped with this build, in order.
-pub(crate) const MIGRATIONS: &[&str] = &[include_str!("migrations/0001_initial.sql")];
+pub(crate) const MIGRATIONS: &[&str] = &[
+    include_str!("migrations/0001_initial.sql"),
+    include_str!("migrations/0002_run_defaults.sql"),
+];
 
 /// The schema version this build creates and understands.
 pub const SCHEMA_VERSION: u32 = MIGRATIONS.len() as u32;
@@ -71,8 +74,39 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["active_context", "dag_edges", "dag_nodes", "events", "projects", "runs"]
+            [
+                "active_context",
+                "dag_edges",
+                "dag_nodes",
+                "events",
+                "projects",
+                "run_defaults",
+                "runs"
+            ]
         );
+    }
+
+    #[test]
+    fn a_version_1_database_upgrades_to_run_defaults_with_its_data_intact() {
+        let mut conn = fresh();
+        migrate(&mut conn, &MIGRATIONS[..1]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO projects (id, name, created_at) VALUES ('proj_1', 'kept', 't0');
+             INSERT INTO dag_nodes VALUES ('node_1', 'proj_1', 'task', '{}', 't1', 't1');",
+        )
+        .unwrap();
+
+        migrate(&mut conn, MIGRATIONS).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
+        let nodes: i64 =
+            conn.query_row("SELECT count(*) FROM dag_nodes", [], |row| row.get(0)).unwrap();
+        assert_eq!(nodes, 1);
+        conn.execute(
+            "INSERT INTO run_defaults VALUES ('proj_1', 'fake', 'fake-echo', 'Be brief.', 't2')",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -121,10 +155,11 @@ mod tests {
         migrate(&mut conn, MIGRATIONS).unwrap();
         let before = schema(&conn);
 
-        let broken = [MIGRATIONS[0], "CREATE TABLE half_done (a TEXT); SELECT no_such_fn();"];
+        let mut broken = MIGRATIONS.to_vec();
+        broken.push("CREATE TABLE half_done (a TEXT); SELECT no_such_fn();");
         assert!(migrate(&mut conn, &broken).is_err());
 
-        assert_eq!(schema_version(&conn).unwrap(), 1);
+        assert_eq!(schema_version(&conn).unwrap(), SCHEMA_VERSION);
         assert_eq!(schema(&conn), before, "no partial schema may survive");
     }
 

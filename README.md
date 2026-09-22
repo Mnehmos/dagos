@@ -19,6 +19,51 @@ The design lives in [`.specify/memory/constitution.md`](.specify/memory/constitu
 [`specs/001-core-runtime`](specs/001-core-runtime); machine contracts are in
 [`specs/001-core-runtime/contracts`](specs/001-core-runtime/contracts).
 
+## Quickstart (offline)
+
+```bash
+cargo run -p dagos -- init
+cargo run -p dagos -- run "Where should durable state live?"
+cargo run -p dagos -- run "Add restart tests"
+```
+
+The first run needs no network: it uses the deterministic fake Jev and the fake provider. Prose
+streams to stdout; each run records the user message, the Jev classification, the compiled IR,
+the provider output, and the validated emissions in `.dagos/dagos.sqlite3`.
+
+The fake provider's model ID selects a behaviour, which makes every failure mode reproducible:
+`fake-echo` (valid), `fake-malformed`, `fake-invalid-schema`, `fake-dangling-edge`, `fake-cycle`,
+`fake-timeout`, `fake-error`. Failed runs stay inspectable and never mutate the DAG:
+
+```bash
+cargo run -p dagos -- run "Try this" --model fake-malformed
+```
+
+`dagos config` shows or changes the provider, model, and system prompt used by subsequent runs
+(`--provider`, `--model`, `--system-prompt`, `--system-prompt-file`); `dagos run` accepts the same
+flags as one-off overrides. Each run records the configuration it actually used.
+
+### Real providers
+
+Setting `OPENROUTER_API_KEY` or `OPENAI_API_KEY` enables the `openrouter` or `openai` provider.
+Other OpenAI-compatible endpoints go in `.dagos/providers.json`:
+
+```json
+{"providers": [
+  {"id": "ollama", "kind": "openai-compatible", "base_url": "http://localhost:11434/v1",
+   "models": ["qwen2.5-coder:7b"]},
+  {"id": "zai", "kind": "openai-compatible", "base_url": "<your Z.ai base URL>",
+   "api_key_env": "ZAI_API_KEY", "models": ["<model id>"]}
+]}
+```
+
+API keys are only read from the environment variable named by `api_key_env`; DAGOS never stores
+them. Then, for example:
+
+```bash
+cargo run -p dagos -- run "Summarize the open tasks" --provider openrouter --model <model id>
+```
+
 ## Layout
 
 | path                  | role                                                                   |

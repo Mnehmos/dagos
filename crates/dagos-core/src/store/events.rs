@@ -54,6 +54,9 @@ impl Tx<'_> {
                 event.created_at
             ],
         )?;
+        if let Some(appended) = &self.appended {
+            appended.borrow_mut().push(event.clone());
+        }
         Ok(event)
     }
 

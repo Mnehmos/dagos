@@ -38,7 +38,7 @@
 
 ## First Real Provider
 - [x] T027 Implement one real provider behind the common interface.
-- [ ] T028 Keep provider configuration outside core domain types.
+- [x] T028 Keep provider configuration outside core domain types.
 - [x] T029 Add opt-in live-provider integration coverage.
 
 ## Inspector and Release

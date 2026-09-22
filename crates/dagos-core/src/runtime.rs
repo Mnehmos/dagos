@@ -94,6 +94,24 @@ impl Runtime {
         &self.tools
     }
 
+    /// The project's configuration for new runs, if one has been chosen.
+    pub fn defaults(&self, project_id: &ProjectId) -> Result<Option<RunConfig>, StoreError> {
+        self.store.transaction(|tx| tx.run_defaults(project_id))
+    }
+
+    /// Chooses the provider, model, and system prompt for the project's subsequent runs. The
+    /// provider must be registered; the model ID is passed to it unchanged.
+    pub fn set_defaults(
+        &self,
+        project_id: &ProjectId,
+        config: &RunConfig,
+    ) -> Result<(), RuntimeError> {
+        if !self.providers.contains_key(&config.provider_id) {
+            return Err(RuntimeError::UnknownProvider(config.provider_id.clone()));
+        }
+        Ok(self.store.transaction(|tx| tx.set_run_defaults(project_id, config))?)
+    }
+
     /// Fails every run a previous process left `running` with error code `interrupted`. Call once
     /// at startup, before starting runs.
     pub fn recover_interrupted_runs(&self) -> Result<Vec<Run>, StoreError> {
