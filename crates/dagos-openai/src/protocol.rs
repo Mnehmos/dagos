@@ -102,3 +102,64 @@ pub fn jev_request_body(model_id: &ModelId, request: &JevRequest, json_mode: boo
     }
     body
 }
+
+/// A `noul` answer at or above this probability classifies the node `active`.
+pub const ACTIVE_THRESHOLD: f64 = 0.5;
+
+/// The Decisions API request for classifying `request` with a decisions model (e.g. TypeSafe's
+/// Jev): one `noul` question per candidate, keyed by node ID, over the request as shared state.
+pub fn decisions_body(model_id: &ModelId, request: &JevRequest) -> Value {
+    let questions: serde_json::Map<String, Value> = request
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let question = json!({
+                "type": "noul",
+                "instructions": {
+                    "task": "Decide whether this durable project node belongs in the active \
+                             context used to answer the user's message in `state.message`.",
+                    "node": candidate,
+                },
+                "criteria": {
+                    "true": "The node is relevant to answering the message and still current.",
+                    "false": "The node is unrelated to the message, stale, or superseded by a \
+                              newer node (see `state.edges`).",
+                },
+            });
+            (candidate.node_id.to_string(), question)
+        })
+        .collect();
+    json!({
+        "model": model_id.as_str(),
+        "questions": questions,
+        "state": {"message": request.message, "edges": request.edges},
+    })
+}
+
+/// Turns a Decisions API response into a `kiss.jev-context.v1` document: each candidate's `noul`
+/// probability becomes `active` (at least [`ACTIVE_THRESHOLD`]) or `inactive`; candidates without
+/// an answer are left out and keep their membership. The runtime validates the result as usual.
+pub fn classification_from_decisions(
+    request: &JevRequest,
+    response: &Value,
+) -> Result<String, String> {
+    let answers = response
+        .get("answers")
+        .and_then(Value::as_object)
+        .ok_or("the Decisions response has no `answers` object")?;
+    let mut classifications = Vec::new();
+    for candidate in &request.candidates {
+        let Some(answer) = answers.get(candidate.node_id.as_str()) else { continue };
+        let probability =
+            answer.get("noul").and_then(Value::as_f64).filter(|p| (0.0..=1.0).contains(p));
+        let Some(probability) = probability else {
+            return Err(format!(
+                "the answer for {} is not a noul probability: {answer}",
+                candidate.node_id
+            ));
+        };
+        let label = if probability >= ACTIVE_THRESHOLD { "active" } else { "inactive" };
+        classifications.push(json!({"node_id": candidate.node_id, "classification": label}));
+    }
+    Ok(json!({"schema": "kiss.jev-context.v1", "classifications": classifications}).to_string())
+}

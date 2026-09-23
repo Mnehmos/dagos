@@ -79,7 +79,11 @@ cargo run -p dagos -- run "Summarize the open tasks" --provider openrouter --mod
 Jev decides each run's active context: which durable nodes the model sees. The offline policy
 classifier always works. To let a model classify instead, choose **Jev → Model** in the app, or set
 `"jev": {"provider": "openrouter", "model": "<model id>"}` in `.dagos/providers.json`, or
-`DAGOS_JEV_PROVIDER` and `DAGOS_JEV_MODEL` (the environment wins). A small, fast model is plenty.
+`DAGOS_JEV_PROVIDER` and `DAGOS_JEV_MODEL` (the environment wins). On OpenRouter the recommended
+Jev is TypeSafe's `~typesafe/jev-latest`, a decisions model: DAGOS asks it one calibrated yes/no
+question per candidate node through OpenRouter's Decisions API (`/api/alpha/decisions`) and turns
+the answers into a `kiss.jev-context.v1` classification. Any other model classifies through Chat
+Completions; a small, fast one is plenty.
 
 Runs never depend on the model Jev. If it fails, times out, has no key, or answers with anything but
 a valid `kiss.jev-context.v1` classification (plans, prose, unknown nodes, extra fields), the run

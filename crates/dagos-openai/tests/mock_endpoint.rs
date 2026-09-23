@@ -13,7 +13,10 @@ use dagos_core::provider::FakeProvider;
 use dagos_core::provider::{CollectDeltas, InferenceProvider, InferenceRequest, ProviderError};
 use dagos_core::runtime::Runtime;
 use dagos_core::store::Store;
-use dagos_openai::{OpenAiCompatible, OpenAiCompatibleConfig, OpenAiCompatibleJev};
+use dagos_openai::{
+    DecisionsJev, OpenAiCompatible, OpenAiCompatibleConfig, OpenAiCompatibleJev, decisions_url,
+    is_decisions_model,
+};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -375,4 +378,75 @@ async fn connection_checks_list_models_and_report_rejected_keys() {
     let error = provider(&base_url, true).check(Some("/key")).await.unwrap_err();
     assert!(error.contains("HTTP 401") && error.contains("No auth credentials"), "{error}");
     assert!(request.await.unwrap().head.starts_with("GET /v1/key HTTP/1.1"));
+}
+
+#[test]
+fn decisions_models_and_their_endpoint_are_recognised() {
+    for (model, decisions) in
+        [("~typesafe/jev-latest", true), ("typesafe/jev-1.13", true), ("openai/gpt-5", false)]
+    {
+        assert_eq!(is_decisions_model(&ModelId::parse(model).unwrap()), decisions, "{model}");
+    }
+    assert_eq!(
+        decisions_url("https://openrouter.ai/api/v1/"),
+        "https://openrouter.ai/api/alpha/decisions"
+    );
+    assert_eq!(decisions_url("http://127.0.0.1:9/gw"), "http://127.0.0.1:9/gw/alpha/decisions");
+}
+
+#[tokio::test]
+async fn typesafe_jev_classifies_through_the_decisions_api() {
+    let (store, project, [keep, drop], config) = jev_setup();
+    let response = json!({
+        "id": "gen-dec-1", "model": "typesafe/jev-1.13", "provider": "TypeSafe",
+        "answers": {
+            keep.as_str(): {"type": "noul", "noul": 0.93},
+            drop.as_str(): {"type": "noul", "noul": 0.08}
+        },
+        "usage": {"input_tokens": 400, "output_tokens": 20, "cost": 0.00002}
+    })
+    .to_string();
+    let (base_url, request) = mock("200 OK", "application/json", vec![response]).await;
+    let jev = DecisionsJev::new(
+        provider(&base_url, true),
+        ModelId::parse("~typesafe/jev-latest").unwrap(),
+    );
+    let runtime =
+        Runtime::new(store.clone(), Arc::new(jev)).with_provider(Arc::new(FakeProvider::new()));
+
+    let run = runtime.run(&project, "Which storage?", &config).await.unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+    let context = store.transaction(|tx| tx.context(&run.id)).unwrap();
+    assert_eq!(context.iter().map(|member| &member.node_id).collect::<Vec<_>>(), [&keep]);
+
+    let captured = request.await.unwrap();
+    assert!(captured.head.starts_with("POST /alpha/decisions HTTP/1.1"), "{}", captured.head);
+    assert!(captured.head.to_ascii_lowercase().contains("authorization: bearer test-key"));
+    assert_eq!(captured.body["model"], "~typesafe/jev-latest");
+    assert_eq!(captured.body["state"]["message"], "Which storage?");
+    let question = &captured.body["questions"][keep.as_str()];
+    assert_eq!(question["type"], "noul");
+    assert_eq!(question["instructions"]["node"]["node_id"], keep.as_str());
+    assert!(question["criteria"]["true"].is_string() && question["criteria"]["false"].is_string());
+    assert_eq!(captured.body["questions"].as_object().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn malformed_decisions_answers_fail_the_jev_not_the_dag() {
+    let (store, project, [keep, _], config) = jev_setup();
+    let response =
+        json!({"answers": {keep.as_str(): {"type": "choice", "choice": "yes"}}}).to_string();
+    let (base_url, _) = mock("200 OK", "application/json", vec![response]).await;
+    let jev =
+        DecisionsJev::new(provider(&base_url, true), ModelId::parse("typesafe/jev-1.13").unwrap());
+    let runtime = Runtime::new(store.clone(), Arc::new(jev))
+        .with_provider(Arc::new(FakeProvider::new()))
+        .with_jev_fallback(Arc::new(FakeJev::new()));
+    let run = runtime.run(&project, "Which storage?", &config).await.unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "the offline policy took over");
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.data,
+        EventData::JevFallback { reason, .. } if reason.contains("not a noul probability")
+    )));
 }

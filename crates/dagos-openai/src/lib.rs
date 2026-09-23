@@ -21,7 +21,8 @@ use serde_json::Value;
 
 pub use prose::ProseExtractor;
 pub use protocol::{
-    jev_request_body, jev_system_message, request_body, system_message, user_message,
+    ACTIVE_THRESHOLD, classification_from_decisions, decisions_body, jev_request_body,
+    jev_system_message, request_body, system_message, user_message,
 };
 pub use sse::SseDecoder;
 
@@ -102,8 +103,13 @@ impl OpenAiCompatible {
 
     async fn get_json(&self, path: &str) -> Result<Value, String> {
         let url = self.url(path);
-        let mut http =
-            self.client.get(&url).header("accept", "application/json").timeout(CHECK_TIMEOUT);
+        let http = self.client.get(&url).timeout(CHECK_TIMEOUT);
+        self.send_json(&url, http).await
+    }
+
+    /// Sends a JSON request with the API key and returns the JSON answer of a 2xx response.
+    async fn send_json(&self, url: &str, http: reqwest::RequestBuilder) -> Result<Value, String> {
+        let mut http = http.header("accept", "application/json");
         if let Some(key) = &self.config.api_key {
             http = http.bearer_auth(key);
         }
@@ -245,5 +251,63 @@ impl JevClassifier for OpenAiCompatibleJev {
     async fn classify(&self, request: &JevRequest) -> Result<String, JevError> {
         let body = jev_request_body(&self.model, request, self.chat.config.json_mode);
         self.chat.stream_completion(body, |_| {}).await.map_err(JevError)
+    }
+}
+
+/// Whether `model` is a decisions model (TypeSafe's Jev, e.g. `~typesafe/jev-latest`), served by
+/// the Decisions API rather than Chat Completions.
+pub fn is_decisions_model(model: &ModelId) -> bool {
+    model.as_str().trim_start_matches('~').starts_with("typesafe/")
+}
+
+/// The Decisions API URL next to an OpenAI-compatible base URL:
+/// `https://openrouter.ai/api/v1` becomes `https://openrouter.ai/api/alpha/decisions`.
+pub fn decisions_url(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    format!("{}/alpha/decisions", base.strip_suffix("/v1").unwrap_or(base))
+}
+
+/// A Jev classifier backed by a decisions model through OpenRouter's Decisions API, such as
+/// TypeSafe's Jev (`~typesafe/jev-latest`).
+///
+/// Each candidate becomes one `noul` question ("does this node belong in the active context?");
+/// the calibrated answers become a `kiss.jev-context.v1` document, which DAGOS validates exactly
+/// like any other Jev output.
+#[derive(Debug, Clone)]
+pub struct DecisionsJev {
+    chat: OpenAiCompatible,
+    model: ModelId,
+    id: String,
+    url: String,
+}
+
+impl DecisionsJev {
+    pub fn new(chat: OpenAiCompatible, model: ModelId) -> Self {
+        let id = format!("{}-jev:{}", chat.config.id, model);
+        let url = decisions_url(&chat.config.base_url);
+        Self { chat, model, id, url }
+    }
+}
+
+#[async_trait]
+impl JevClassifier for DecisionsJev {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn classify(&self, request: &JevRequest) -> Result<String, JevError> {
+        if request.candidates.is_empty() {
+            return classification_from_decisions(request, &serde_json::json!({"answers": {}}))
+                .map_err(JevError);
+        }
+        let body = decisions_body(&self.model, request);
+        let http = self
+            .chat
+            .client
+            .post(&self.url)
+            .header("content-type", "application/json")
+            .body(body.to_string());
+        let response = self.chat.send_json(&self.url, http).await.map_err(JevError)?;
+        classification_from_decisions(request, &response).map_err(JevError)
     }
 }

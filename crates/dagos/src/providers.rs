@@ -17,7 +17,9 @@ use std::time::Duration;
 use dagos_core::context::{FakeJev, JevClassifier};
 use dagos_core::domain::{ModelId, ProviderId};
 use dagos_core::provider::{FakeProvider, InferenceProvider};
-use dagos_openai::{OpenAiCompatible, OpenAiCompatibleConfig, OpenAiCompatibleJev};
+use dagos_openai::{
+    DecisionsJev, OpenAiCompatible, OpenAiCompatibleConfig, OpenAiCompatibleJev, is_decisions_model,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::keys::{self, KeyStore};
@@ -425,8 +427,13 @@ pub fn load(
         None => (fallback.clone(), jev_setting(None, JevSource::Default, fallback.id(), None)),
         Some((entry, source)) => match endpoints.get(&entry.provider) {
             Some(endpoint) => {
-                let jev: Arc<dyn JevClassifier> =
-                    Arc::new(OpenAiCompatibleJev::new(endpoint.chat.clone(), entry.model.clone()));
+                // Decisions models (TypeSafe's Jev) use the Decisions API; others chat.
+                let (chat, model) = (endpoint.chat.clone(), entry.model.clone());
+                let jev: Arc<dyn JevClassifier> = if is_decisions_model(&model) {
+                    Arc::new(DecisionsJev::new(chat, model))
+                } else {
+                    Arc::new(OpenAiCompatibleJev::new(chat, model))
+                };
                 let setting = jev_setting(Some(entry), source, jev.id(), None);
                 (jev, setting)
             }

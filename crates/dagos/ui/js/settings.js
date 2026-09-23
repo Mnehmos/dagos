@@ -13,6 +13,15 @@ const SOURCE_TEXT = {
   not_needed: "no key needed",
 };
 
+/** TypeSafe's Jev, a calibrated decisions model on OpenRouter, built for exactly this job. */
+export const TYPESAFE_JEV = "~typesafe/jev-latest";
+
+/** Model suggestions for Jev on `providerId`: TypeSafe's Jev first on OpenRouter. */
+export function jevModels(provider, fetched = []) {
+  const models = [...(provider?.models ?? []), ...fetched];
+  return [...new Set(provider?.id === "openrouter" ? [TYPESAFE_JEV, ...models] : models)];
+}
+
 /** The status a provider shows in the list: `ready`, `needs-key`, or `keyless`. */
 export function providerStatus(provider) {
   if (provider.origin === "builtin") return { kind: "ready", text: "Offline" };
@@ -170,7 +179,7 @@ export function jevHtml(settings, { checks }) {
   const candidates = settings.providers.filter((provider) => provider.origin !== "builtin");
   const selected = jev.provider ?? candidates.find((provider) => provider.available)?.id ?? candidates[0]?.id;
   const selectedProvider = candidates.find((provider) => provider.id === selected);
-  const models = [...new Set([...(selectedProvider?.models ?? []), ...(checks[selected]?.models ?? [])])];
+  const models = jevModels(selectedProvider, checks[selected]?.models);
   const locked = jev.source === "env";
   const usingModel = Boolean(jev.provider);
   return `<header class="settings-head"><h3>Jev</h3><span class="status-pill status-${jev.problem ? "needs-key" : usingModel ? "ready" : "keyless"}">${jev.problem ? "Fallback" : usingModel ? "Model" : "Offline"}</span></header>
@@ -192,7 +201,8 @@ export function jevHtml(settings, { checks }) {
             .map((provider) => `<option value="${esc(provider.id)}" ${provider.id === selected ? "selected" : ""}>${esc(provider.name)}${provider.available ? "" : " (needs key)"}</option>`)
             .join("")}</select>
           <label for="jev-model">Model</label>
-          <input id="jev-model" name="model" list="jev-models" value="${esc(jev.model ?? "")}" autocomplete="off" spellcheck="false" placeholder="e.g. a small, fast model id">
+          <input id="jev-model" name="model" list="jev-models" value="${esc(jev.model ?? "")}" autocomplete="off" spellcheck="false" placeholder="${selected === "openrouter" ? TYPESAFE_JEV : "e.g. a small, fast model id"}">
+          <p class="hint">On OpenRouter, <code>${TYPESAFE_JEV}</code> (TypeSafe's Jev) is recommended: it answers one calibrated yes/no per node through the Decisions API. Other models classify through chat.</p>
           <datalist id="jev-models">${models.map((model) => `<option value="${esc(model)}"></option>`).join("")}</datalist>
         </div>
         <div class="button-row start"><button type="submit" class="primary">Save</button></div>
@@ -414,7 +424,7 @@ function bind() {
   dialog.addEventListener("change", (event) => {
     if (event.target.name === "mode") syncJevForm();
     if (event.target.id === "jev-provider") {
-      const models = [...new Set([...(ui.settings.providers.find((p) => p.id === event.target.value)?.models ?? []), ...knownModels(event.target.value)])];
+      const models = jevModels(ui.settings.providers.find((p) => p.id === event.target.value), knownModels(event.target.value));
       $("jev-models").innerHTML = models.map((model) => `<option value="${esc(model)}"></option>`).join("");
     }
   });
