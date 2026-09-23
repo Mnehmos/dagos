@@ -45,6 +45,23 @@
         "additionalProperties": false
       }
     },
+    "tool_results": {
+      "description": "Tool calls made earlier in this run and what came of them, oldest first. Only present after a response asked for tools.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["call_id", "name", "arguments", "status"],
+        "properties": {
+          "call_id": {"type": "string", "minLength": 1},
+          "name": {"type": "string", "minLength": 1},
+          "arguments": {"type": "object"},
+          "status": {"enum": ["completed", "failed", "denied"]},
+          "output": {"description": "What the tool returned (completed) or its error (failed)."},
+          "reason": {"type": "string", "description": "Why the call was denied."}
+        },
+        "additionalProperties": false
+      }
+    },
     "recent_events": {
       "description": "The conversation so far: this conversation's most recent earlier turns, oldest first, as an appended array. Each turn carries the user's message (request); completed turns carry the prose they presented, failed turns their error code and message.",
       "type": "array",

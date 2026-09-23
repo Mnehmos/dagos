@@ -6,8 +6,8 @@
 
 use dagos_core::domain::{
     ContextClassification, ContextMember, Conversation, ConversationId, DagEdge, DagNode, EdgeId,
-    Event, EventData, InferenceIr, InferenceResponse, JevRequest, ModelId, NodeId, Project,
-    ProjectId, ProviderId, Run, RunConfig, RunId, RunStatus,
+    Event, EventData, InferenceIr, InferenceResponse, JevRequest, ModelId, NodeId, Payload,
+    Project, ProjectId, ProviderId, Run, RunConfig, RunId, RunStatus, ToolDecider,
 };
 use dagos_core::store::{Store, StoreError};
 use dagos_mcp::Capabilities;
@@ -65,6 +65,73 @@ pub struct TurnView {
     pub jev_fallback: bool,
     pub emitted_nodes: usize,
     pub emitted_edges: usize,
+    /// What the turn showed, in order: each validated reply's prose and each tool call.
+    pub items: Vec<TurnItem>,
+    /// Prose streamed since the last validated reply, while the run is still running.
+    pub streaming: String,
+}
+
+/// One step of a turn, in the order it happened.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TurnItem {
+    /// A validated reply's presentation prose.
+    Prose { text: String },
+    /// A tool call and what came of it.
+    Tool(ToolCallView),
+}
+
+/// A tool call as the chat and the inspector show it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallView {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: Payload,
+    /// `awaiting` (not decided yet: its policy is being checked or a person is being asked),
+    /// `running`, `completed`, `failed`, or `denied`.
+    pub status: &'static str,
+    pub decided_by: Option<ToolDecider>,
+    pub reason: Option<String>,
+    pub output: Option<serde_json::Value>,
+}
+
+/// The tool calls recorded in `events`, in order.
+pub fn tool_calls(events: &[Event]) -> Vec<ToolCallView> {
+    let mut calls: Vec<ToolCallView> = Vec::new();
+    for event in events {
+        apply_tool_event(&mut calls, &event.data);
+    }
+    calls
+}
+
+/// Updates `calls` with one event; true if the event was a tool event.
+fn apply_tool_event(calls: &mut Vec<ToolCallView>, data: &EventData) -> bool {
+    match data {
+        EventData::ToolRequested { call_id, name, arguments } => calls.push(ToolCallView {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            arguments: arguments.clone(),
+            status: "awaiting",
+            decided_by: None,
+            reason: None,
+            output: None,
+        }),
+        EventData::ToolDecided { call_id, allowed, by, reason } => {
+            if let Some(call) = calls.iter_mut().find(|call| &call.call_id == call_id) {
+                call.status = if *allowed { "running" } else { "denied" };
+                call.decided_by = Some(*by);
+                call.reason = reason.clone();
+            }
+        }
+        EventData::ToolCompleted { call_id, output, is_error } => {
+            if let Some(call) = calls.iter_mut().find(|call| &call.call_id == call_id) {
+                call.status = if *is_error { "failed" } else { "completed" };
+                call.output = Some(output.clone());
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 #[derive(Debug, Serialize)]
@@ -144,6 +211,8 @@ pub struct RunDetail {
     pub emitted_nodes: Vec<NodeId>,
     pub emitted_edges: Vec<EdgeId>,
     pub failure: Option<FailureView>,
+    /// Tool calls the run's responses asked for, in order, with what came of them.
+    pub tool_calls: Vec<ToolCallView>,
     pub events: Vec<Event>,
 }
 
@@ -203,7 +272,7 @@ pub fn project_overview(
         run_defaults,
         providers,
         jev: workspace.runtime().jev().id().to_owned(),
-        capabilities: workspace.capabilities.clone(),
+        capabilities: workspace.capabilities(),
         dag,
         runs,
         conversations,
@@ -238,24 +307,50 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
         jev_fallback: false,
         emitted_nodes: 0,
         emitted_edges: 0,
+        items: Vec::new(),
+        streaming: String::new(),
     };
     let mut streamed = String::new();
-    let mut validated = None;
+    let mut validated: Vec<String> = Vec::new();
+    let mut calls: Vec<ToolCallView> = Vec::new();
+    let mut order: Vec<Result<String, String>> = Vec::new(); // Ok(prose) or Err(call id)
     for event in events {
+        if apply_tool_event(&mut calls, &event.data) {
+            if let EventData::ToolRequested { call_id, .. } = &event.data {
+                order.push(Err(call_id.clone()));
+            }
+            continue;
+        }
         match &event.data {
             EventData::MessageRecorded { text, .. } => view.message = Some(text.clone()),
             EventData::JevRequested { jev_id, .. } => view.jev_id = Some(jev_id.clone()),
             EventData::JevFallback { .. } => view.jev_fallback = true,
             EventData::InferenceDelta { text } => streamed.push_str(text),
+            EventData::InferenceStarted { .. } => streamed.clear(),
             EventData::ResponseValidated { response } => {
-                validated = Some(response.presentation.prose.clone());
+                let prose = response.presentation.prose.clone();
+                if !prose.trim().is_empty() {
+                    order.push(Ok(prose.clone()));
+                    validated.push(prose);
+                }
+                streamed.clear();
             }
             EventData::DagNodeCreated { .. } => view.emitted_nodes += 1,
             EventData::DagEdgeCreated { .. } => view.emitted_edges += 1,
             _ => {}
         }
     }
-    view.prose = validated.unwrap_or(streamed);
+    view.items = order
+        .into_iter()
+        .filter_map(|entry| match entry {
+            Ok(text) => Some(TurnItem::Prose { text }),
+            Err(id) => calls.iter().find(|call| call.call_id == id).cloned().map(TurnItem::Tool),
+        })
+        .collect();
+    view.prose = if validated.is_empty() { streamed.clone() } else { validated.join("\n\n") };
+    if view.run.status == RunStatus::Running {
+        view.streaming = streamed;
+    }
     if view.run.status == RunStatus::Failed {
         view.failure = failure(events);
     }
@@ -329,6 +424,7 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
         emitted_nodes: Vec::new(),
         emitted_edges: Vec::new(),
         failure: None,
+        tool_calls: Vec::new(),
         events: Vec::new(),
     };
     let mut rejection: Option<(&'static str, String)> = None;
@@ -381,9 +477,13 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
             }
             EventData::RunStarted { .. }
             | EventData::InferenceStarted { .. }
+            | EventData::ToolRequested { .. }
+            | EventData::ToolDecided { .. }
+            | EventData::ToolCompleted { .. }
             | EventData::RunCompleted {} => {}
         }
     }
+    detail.tool_calls = tool_calls(&events);
     detail.events = events;
     Ok(Some(detail))
 }

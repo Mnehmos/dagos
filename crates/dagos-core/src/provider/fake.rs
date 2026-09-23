@@ -8,7 +8,7 @@ use super::{DeltaSink, InferenceProvider, InferenceRequest, ProviderError};
 use crate::domain::{
     EdgeType, Emission, EmissionRef, Endpoint, InferenceIr, InferenceResponse,
     InferenceResponseSchema, ModelId, NodeId, NodeType, Payload, Presentation, ProviderId,
-    closed_enum,
+    ToolCall, closed_enum,
 };
 
 closed_enum!(
@@ -28,6 +28,10 @@ closed_enum!(
         Timeout => "fake-timeout",
         /// Fails like an unreachable endpoint.
         Error => "fake-error",
+        /// Asks for one tool call, then reports its result. The message may name a listed tool
+        /// and give JSON arguments (`ooda.read_file {"path": "README.md"}`); otherwise the first
+        /// listed tool is called without arguments.
+        Tool => "fake-tool",
     }
 );
 
@@ -105,6 +109,37 @@ impl Default for FakeProvider {
     }
 }
 
+/// The `fake-tool` response for `ir`: one tool call, then a report of what came back.
+fn tool_response(ir: &InferenceIr) -> InferenceResponse {
+    if let Some(result) = ir.tool_results.last() {
+        let outcome = match (&result.output, &result.reason) {
+            (_, Some(reason)) => format!("was denied: {reason}"),
+            (Some(output), None) => {
+                let text = output.to_string();
+                let excerpt: String = text.chars().take(300).collect();
+                format!("returned {} {excerpt}", result.status)
+            }
+            (None, None) => format!("ended {}", result.status),
+        };
+        return response(&format!("`{}` {outcome}", result.name), Vec::new());
+    }
+    let message = ir.task.message.trim();
+    let named = ir.tools.iter().find(|tool| {
+        message
+            .strip_prefix(tool.name.as_str())
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+    });
+    let Some(tool) = named.or(ir.tools.first()) else {
+        return response("No tools are available to this run.", Vec::new());
+    };
+    let arguments = named
+        .and_then(|tool| serde_json::from_str::<Payload>(message[tool.name.len()..].trim()).ok())
+        .unwrap_or_default();
+    let mut calling = response(&format!("Calling `{}`.", tool.name), Vec::new());
+    calling.tool_calls.push(ToolCall { name: tool.name.clone(), arguments });
+    calling
+}
+
 fn reference(name: &str) -> EmissionRef {
     EmissionRef::parse(name).expect("valid emission ref")
 }
@@ -157,6 +192,11 @@ impl InferenceProvider for FakeProvider {
         match model {
             FakeModel::Echo => {
                 let response = Self::echo_response(request.ir);
+                self.stream(&response.presentation.prose, deltas).await;
+                Ok(to_json(&response))
+            }
+            FakeModel::Tool => {
+                let response = tool_response(request.ir);
                 self.stream(&response.presentation.prose, deltas).await;
                 Ok(to_json(&response))
             }

@@ -9,7 +9,8 @@ use std::collections::BTreeSet;
 use crate::contracts::{Contract, ContractViolation};
 use crate::domain::{
     ConversationTurn, ErrorCode, EventData, InferenceIr, InferenceIrSchema, IrContextItem, IrEvent,
-    IrEventType, IrRelation, IrTask, IrTool, NodeId, NodeType, Role, RunId, RunStatus,
+    IrEventType, IrRelation, IrTask, IrTool, IrToolResult, IrToolStatus, NodeId, NodeType, Role,
+    RunId, RunStatus,
 };
 use crate::store::{StoreError, Tx};
 
@@ -72,6 +73,7 @@ pub fn compile(
         context,
         recent_events: recent_run_outcomes(tx, run_id)?,
         tools: tools.to_vec(),
+        tool_results: tool_results(tx, run_id)?,
     };
     Contract::InferenceIr.validate(&serde_json::to_value(&ir).expect("IR serializes"))?;
     Ok(ir)
@@ -125,6 +127,44 @@ fn recent_run_outcomes(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrEvent>, Stor
         outcomes.push(outcome);
     }
     Ok(outcomes)
+}
+
+/// The tool calls recorded so far in `run_id`, oldest first, with their outcome.
+fn tool_results(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrToolResult>, StoreError> {
+    let mut results: Vec<IrToolResult> = Vec::new();
+    for event in tx.events(run_id)? {
+        match event.data {
+            EventData::ToolRequested { call_id, name, arguments } => results.push(IrToolResult {
+                call_id,
+                name,
+                arguments,
+                status: IrToolStatus::Denied,
+                output: None,
+                reason: Some("no decision was recorded".to_owned()),
+            }),
+            EventData::ToolDecided { call_id, allowed, reason, .. } => {
+                if let Some(result) = results.iter_mut().find(|result| result.call_id == call_id) {
+                    result.reason = if allowed { None } else { reason };
+                    if allowed {
+                        // Allowed but never completed: the call was interrupted.
+                        result.status = IrToolStatus::Failed;
+                        result.output =
+                            Some(serde_json::json!({"error": "the call did not finish"}));
+                    }
+                }
+            }
+            EventData::ToolCompleted { call_id, output, is_error } => {
+                if let Some(result) = results.iter_mut().find(|result| result.call_id == call_id) {
+                    result.status =
+                        if is_error { IrToolStatus::Failed } else { IrToolStatus::Completed };
+                    result.output = Some(output);
+                    result.reason = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(results)
 }
 
 fn not_found(kind: &'static str, id: impl ToString) -> CompileError {

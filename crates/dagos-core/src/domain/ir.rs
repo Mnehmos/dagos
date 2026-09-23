@@ -25,6 +25,35 @@ pub struct InferenceIr {
     /// Optional capability descriptions; omitted when there are none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<IrTool>,
+    /// Tool calls made earlier in this run and what came of them, oldest first; omitted when
+    /// there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_results: Vec<IrToolResult>,
+}
+
+closed_enum!(
+    /// What came of a tool call.
+    IrToolStatus, "tool call status" {
+        Completed => "completed",
+        Failed => "failed",
+        Denied => "denied",
+    }
+);
+
+/// A tool call made earlier in this run: what was asked and what came back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrToolResult {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: Payload,
+    pub status: IrToolStatus,
+    /// The tool's output, for completed and failed calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    /// Why a call was denied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// The run's user message.

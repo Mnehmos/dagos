@@ -6,13 +6,29 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::dag::{EdgeType, NodeType};
+use super::dag::{EdgeType, NodeType, Payload, closed_enum};
 use super::ids::{EdgeId, EventId, NodeId, RunId};
 use super::ir::InferenceIr;
 use super::jev::{ContextClassification, JevRequest};
 use super::response::{EmissionRef, InferenceResponse};
 use super::run::{ErrorCode, ModelId, ProviderId};
 use super::time::Timestamp;
+
+closed_enum!(
+    /// Who decided whether a tool call runs.
+    ToolDecider, "tool decider" {
+        /// The tool's configured policy (`allow` or `off`).
+        Policy => "policy",
+        /// A person approved or denied it.
+        User => "user",
+        /// Nobody answered in time, so it was denied.
+        Timeout => "timeout",
+        /// The run reached its tool-step limit.
+        Limit => "limit",
+        /// No such tool is available to this run.
+        Unavailable => "unavailable",
+    }
+);
 
 /// A recorded run event. Serializes flat: `{id, run_id, sequence, type, payload, created_at}`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -70,6 +86,22 @@ pub enum EventData {
     /// The provider's raw final output, recorded verbatim before validation.
     #[serde(rename = "inference.completed")]
     InferenceCompleted { output: String },
+    /// A validated response asked for a tool call. DAGOS decides whether it runs.
+    #[serde(rename = "tool.requested")]
+    ToolRequested { call_id: String, name: String, arguments: Payload },
+    /// Whether a requested call runs, and who decided.
+    #[serde(rename = "tool.decided")]
+    ToolDecided {
+        call_id: String,
+        allowed: bool,
+        by: ToolDecider,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// A permitted call finished; `is_error` means the tool (or reaching it) failed. The output
+    /// goes back to the model through the next IR and never becomes DAG state by itself.
+    #[serde(rename = "tool.completed")]
+    ToolCompleted { call_id: String, output: serde_json::Value, is_error: bool },
     /// The final output was validated and its emissions applied, atomically with this event.
     #[serde(rename = "response.validated")]
     ResponseValidated { response: InferenceResponse },

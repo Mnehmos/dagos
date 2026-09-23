@@ -16,7 +16,12 @@ The user message is a kiss.inference-ir.v1 JSON document:
 - context lists the durable DAG nodes that are active for this request, with their relations.
 - recent_events is the conversation so far, oldest first: each earlier turn's request (the user's \
 message) and your reply (prose), or why that turn failed.
-- tools, if present, only describe capabilities; nothing has been executed.
+- tools, if present, are tools you may use. To use them, list calls in \"tool_calls\" (name exactly \
+as listed, arguments matching its input_schema). DAGOS runs the calls the person permits and sends \
+you a new IR whose tool_results say what each returned, failed with, or why it was denied; keep \
+going until you can answer, then reply without tool_calls. Say briefly in prose what you are doing \
+and why. Some tools act on the person's computer: call only what the request needs.
+- tool_results, if present, are this request's earlier tool calls and their outcomes.
 
 Reply with exactly one JSON object that satisfies kiss.inference-response.v1 and nothing else: no \
 markdown fences and no text outside the object.

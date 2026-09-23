@@ -9,7 +9,10 @@ use dagos_core::domain::{IrTool, ModelId, Project, ProjectId, ProviderId, RunCon
 use dagos_core::provider::FakeProvider;
 use dagos_core::runtime::Runtime;
 use dagos_core::store::{EventListener, Store, StoreError};
-use dagos_mcp::{Capabilities, McpConfig};
+use dagos_core::tools::{ToolExecutor, ToolGate};
+use dagos_mcp::{Capabilities, McpConfig, McpPool};
+
+use crate::approvals::{APPROVAL_TIMEOUT, Approvals};
 
 use crate::keys::KeyStore;
 use crate::providers::{self, Endpoint, Settings};
@@ -45,14 +48,20 @@ const MCP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Workspace {
     pub store: Arc<Store>,
     pub project: Project,
-    /// MCP capabilities discovered by this process, if discovery ran (`run` and `serve` do).
-    pub capabilities: Option<Capabilities>,
     dir: PathBuf,
     keys: Option<KeyStore>,
     inference_timeout: Duration,
-    tools: Vec<IrTool>,
+    /// MCP tools, once [`Workspace::start_tools`] has run (`run` and `serve` do).
+    mcp: RwLock<Option<McpState>>,
+    approvals: Arc<Approvals>,
     live: RwLock<Live>,
     edits: Mutex<()>,
+}
+
+/// The running MCP servers and what they offer.
+struct McpState {
+    pool: Arc<McpPool>,
+    capabilities: Capabilities,
 }
 
 /// What the current provider configuration produced.
@@ -96,15 +105,15 @@ impl Workspace {
             .into_iter()
             .next()
             .ok_or_else(|| format!("the database in {} has no project", dir.display()))?;
-        let live = build(&store, dir, keys.as_ref(), inference_timeout, &[])?;
+        let live = build(&store, dir, keys.as_ref(), inference_timeout, None)?;
         Ok(Self {
             store,
             project,
-            capabilities: None,
             dir: dir.to_owned(),
             keys,
             inference_timeout,
-            tools: Vec::new(),
+            mcp: RwLock::new(None),
+            approvals: Arc::new(Approvals::new(APPROVAL_TIMEOUT)),
             live: RwLock::new(live),
             edits: Mutex::new(()),
         })
@@ -143,34 +152,73 @@ impl Workspace {
     /// Rebuilds the providers, the Jev, and the runtime from the current configuration. On error
     /// the previous runtime stays in place.
     pub fn reload(&self) -> Result<(), String> {
+        let tools = {
+            let mcp = self.mcp.read().unwrap_or_else(PoisonError::into_inner);
+            mcp.as_ref().map(|state| {
+                let runner: ToolRunner = (state.pool.clone(), self.approvals.clone());
+                (state.capabilities.tools.clone(), runner)
+            })
+        };
         let live =
-            build(&self.store, &self.dir, self.keys.as_ref(), self.inference_timeout, &self.tools)?;
+            build(&self.store, &self.dir, self.keys.as_ref(), self.inference_timeout, tools)?;
         *self.live.write().unwrap_or_else(PoisonError::into_inner) = live;
         Ok(())
     }
 
-    /// Discovers MCP capabilities from `mcp.json` in `dir` and compiles them into every
-    /// subsequent run's IR. Without the file, or with every server unavailable, runs simply have
-    /// no tools; `warn` hears about each server that could not be used.
-    pub async fn with_mcp_capabilities(
-        mut self,
-        dir: &Path,
-        mut warn: impl FnMut(String),
-    ) -> Result<Self, String> {
-        let Some(config) = McpConfig::load(&dir.join(MCP_FILE))? else { return Ok(self) };
-        let capabilities = dagos_mcp::discover(&config, MCP_DISCOVERY_TIMEOUT).await;
-        for server in &capabilities.servers {
-            if let Some(error) = &server.error {
-                warn(format!(
-                    "MCP server `{}` unavailable, continuing without it: {error}",
-                    server.id
-                ));
+    /// Starts the MCP servers named in `mcp.json` (stopping any this workspace ran before) and
+    /// offers their tools to subsequent runs. Without the file runs simply have no tools; `warn`
+    /// hears about each server that could not be used.
+    pub async fn start_tools(&self, mut warn: impl FnMut(String)) -> Result<(), String> {
+        let state = match McpConfig::load(&self.dir.join(MCP_FILE))? {
+            None => None,
+            Some(config) => {
+                let pool = Arc::new(McpPool::new(config.clone(), MCP_DISCOVERY_TIMEOUT));
+                let capabilities = pool.discover().await;
+                for server in &capabilities.servers {
+                    if let Some(error) = &server.error {
+                        warn(format!(
+                            "MCP server `{}` unavailable, continuing without it: {error}",
+                            server.id
+                        ));
+                    }
+                }
+                self.approvals.set_config(config);
+                Some(McpState { pool, capabilities })
+            }
+        };
+        *self.mcp.write().unwrap_or_else(PoisonError::into_inner) = state;
+        self.reload()
+    }
+
+    /// Saves new tool policies to `mcp.json` and applies them without restarting servers. The
+    /// servers themselves (ids, commands) must be unchanged; use [`Workspace::start_tools`] after
+    /// changing those.
+    pub fn set_tool_policies(&self, config: McpConfig) -> Result<(), String> {
+        config.save(&self.dir.join(MCP_FILE))?;
+        {
+            let mut mcp = self.mcp.write().unwrap_or_else(PoisonError::into_inner);
+            if let Some(state) = mcp.as_mut() {
+                state.capabilities = state.pool.set_policies(config.clone());
             }
         }
-        self.tools = capabilities.tools.clone();
-        self.capabilities = Some(capabilities);
-        self.reload()?;
-        Ok(self)
+        self.approvals.set_config(config);
+        self.reload()
+    }
+
+    /// The MCP configuration in `mcp.json` (empty if there is none).
+    pub fn mcp_config(&self) -> Result<McpConfig, String> {
+        Ok(McpConfig::load(&self.dir.join(MCP_FILE))?.unwrap_or_default())
+    }
+
+    /// What the MCP servers offer, if tools were started.
+    pub fn capabilities(&self) -> Option<Capabilities> {
+        let mcp = self.mcp.read().unwrap_or_else(PoisonError::into_inner);
+        mcp.as_ref().map(|state| state.capabilities.clone())
+    }
+
+    /// The gate that decides and collects approvals for tool calls.
+    pub fn approvals(&self) -> &Arc<Approvals> {
+        &self.approvals
     }
 
     /// The configuration new runs of the default project use.
@@ -199,13 +247,17 @@ impl Workspace {
     }
 }
 
-/// A runtime over `store` with the providers and Jev configured for `dir`.
+/// What executes tool calls and what decides whether they may run.
+type ToolRunner = (Arc<dyn ToolExecutor>, Arc<dyn ToolGate>);
+
+/// A runtime over `store` with the providers and Jev configured for `dir`, and the MCP tools
+/// with their runner, if any.
 fn build(
     store: &Arc<Store>,
     dir: &Path,
     keys: Option<&KeyStore>,
     inference_timeout: Duration,
-    tools: &[IrTool],
+    tools: Option<(Vec<IrTool>, ToolRunner)>,
 ) -> Result<Live, String> {
     let loaded = providers::load(
         dir,
@@ -213,9 +265,11 @@ fn build(
         keys,
         |warning| eprintln!("warning: {warning}"),
     )?;
-    let mut runtime = Runtime::new(store.clone(), loaded.jev.clone())
-        .with_inference_timeout(inference_timeout)
-        .with_tools(tools.to_vec());
+    let mut runtime =
+        Runtime::new(store.clone(), loaded.jev.clone()).with_inference_timeout(inference_timeout);
+    if let Some((tools, (executor, gate))) = tools {
+        runtime = runtime.with_tools(tools).with_tool_runner(executor, gate);
+    }
     if !Arc::ptr_eq(&loaded.jev, &loaded.jev_fallback) {
         runtime = runtime.with_jev_fallback(loaded.jev_fallback);
     }

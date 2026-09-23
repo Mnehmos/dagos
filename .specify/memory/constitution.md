@@ -10,13 +10,16 @@ DAGOS is a minimal operating system for LLM coding workflows. Durable project st
 4. Durable DAG state is separate from active context. Removing context never deletes durable state.
 5. Providers receive versioned IR, never raw DAG records.
 6. All model input and output is machine-readable JSON. User prose is an explicit presentation field, not canonical state.
-7. MCP is optional external capability infrastructure.
+7. MCP is optional external capability infrastructure. DAGOS may execute MCP tool calls only as a bounded, person-controlled step of a run: a validated response requests the call, the tool's policy (off, ask, allow) or a person's explicit approval permits it, a fixed step limit bounds each run, every request, decision, and result is an event, and results reach the model only through the next IR. Tool output never becomes DAG state except through validated emissions.
 8. KISS: SQLite, explicit interfaces, deterministic state transitions, no vectors, embeddings, autonomous orchestration, routing, or elaborate memory in v0.1.
 9. Runs, classifications, context changes, inference events, and emissions must be inspectable.
 10. Core contracts and state transitions require automated tests.
 
 ## Non-goals
 Autonomous multi-agent orchestration, provider routing, embeddings, vector databases, provider-specific agent frameworks, automatic prompt optimization, hidden mutable memory, and GUI automation as core capability.
+
+## Amendments
+- 2026-09-23: Principle 7 allows person-controlled tool execution through MCP (requested by the project owner). DAGOS still does not plan, pursue goals, retry, or act on its own: every run starts from a person's message, and every tool call is either pre-permitted by that person's policy or approved by them.
 
 ## Change Rule
 Expanding Jev beyond classification or turning DAGOS into an autonomous agent framework requires an explicit constitution change.

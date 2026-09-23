@@ -21,12 +21,13 @@ use crate::context::{
 use crate::domain::{
     ContextClassification, ConversationId, ConversationTurn, Emission, EmissionRef, Endpoint,
     ErrorCode, EventData, InferenceIr, IrTool, JevRequest, NodeId, NodeType, ProjectId, ProviderId,
-    Run, RunConfig, RunId,
+    Run, RunConfig, RunId, ToolDecider,
 };
 use crate::ir::{CompileError, compile};
 use crate::provider::{DeltaSink, InferenceProvider, InferenceRequest};
 use crate::response::{ValidatedResponse, validate_response};
 use crate::store::{Store, StoreError, Tx};
+use crate::tools::{ToolDecision, ToolExecutor, ToolGate, ToolOutput, ToolRequest};
 
 /// How long a provider may take to return its final output, unless configured otherwise.
 pub const DEFAULT_INFERENCE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -71,9 +72,18 @@ pub struct Runtime {
     jev_fallback: Option<Arc<dyn JevClassifier>>,
     providers: BTreeMap<ProviderId, Arc<dyn InferenceProvider>>,
     tools: Vec<IrTool>,
+    tool_runner: Option<(Arc<dyn ToolExecutor>, Arc<dyn ToolGate>)>,
+    max_tool_steps: usize,
+    tool_timeout: Duration,
     inference_timeout: Duration,
     jev_timeout: Duration,
 }
+
+/// How many rounds of tool calls one run may execute by default.
+pub const DEFAULT_MAX_TOOL_STEPS: usize = 8;
+
+/// How long one tool call may take by default.
+pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 impl Runtime {
     pub fn new(store: Arc<Store>, jev: Arc<dyn JevClassifier>) -> Self {
@@ -83,6 +93,9 @@ impl Runtime {
             jev_fallback: None,
             providers: BTreeMap::new(),
             tools: Vec::new(),
+            tool_runner: None,
+            max_tool_steps: DEFAULT_MAX_TOOL_STEPS,
+            tool_timeout: DEFAULT_TOOL_TIMEOUT,
             inference_timeout: DEFAULT_INFERENCE_TIMEOUT,
             jev_timeout: DEFAULT_JEV_TIMEOUT,
         }
@@ -110,6 +123,29 @@ impl Runtime {
     /// validated exactly like the primary's, and `jev.fallback` records why it was used.
     pub fn with_jev_fallback(mut self, fallback: Arc<dyn JevClassifier>) -> Self {
         self.jev_fallback = Some(fallback);
+        self
+    }
+
+    /// Lets runs execute the tool calls their validated responses ask for: `gate` decides whether
+    /// each call may run and `executor` runs it. Without a runner, requested calls are recorded
+    /// and denied as unavailable.
+    pub fn with_tool_runner(
+        mut self,
+        executor: Arc<dyn ToolExecutor>,
+        gate: Arc<dyn ToolGate>,
+    ) -> Self {
+        self.tool_runner = Some((executor, gate));
+        self
+    }
+
+    /// The most rounds of tool calls one run executes; further requests are denied.
+    pub fn with_max_tool_steps(mut self, steps: usize) -> Self {
+        self.max_tool_steps = steps;
+        self
+    }
+
+    pub fn with_tool_timeout(mut self, timeout: Duration) -> Self {
+        self.tool_timeout = timeout;
         self
     }
 
@@ -263,22 +299,114 @@ impl Runtime {
         provider: &dyn InferenceProvider,
     ) -> Result<Run, StageFailure> {
         self.classify_context(run, task, message).await?;
-        let ir = self.compile_ir(run, task)?;
-        let raw = self.infer(run, &ir, provider).await?;
-        let validated = validate_response(&raw, &ir).map_err(|error| {
-            StageFailure::new(ErrorCode::ResponseInvalid, format!("response rejected: {error}"))
-                .with_evidence(EventData::ResponseRejected { reason: error.to_string() })
+        let mut rounds = 0;
+        let mut next_call = 1;
+        loop {
+            let ir = self.compile_ir(run, task)?;
+            let raw = self.infer(run, &ir, provider).await?;
+            let validated = validate_response(&raw, &ir).map_err(|error| {
+                StageFailure::new(ErrorCode::ResponseInvalid, format!("response rejected: {error}"))
+                    .with_evidence(EventData::ResponseRejected { reason: error.to_string() })
+            })?;
+            let calls = validated.response().tool_calls.clone();
+            self.store.transaction(|tx| apply_response(tx, run, &validated)).map_err(|error| {
+                match error {
+                    StoreError::Dag(violation) => StageFailure::new(
+                        ErrorCode::EmissionRejected,
+                        format!("emissions rejected: {violation}"),
+                    )
+                    .with_evidence(EventData::ResponseRejected { reason: violation.to_string() }),
+                    other => StageFailure::from(other),
+                }
+            })?;
+            if calls.is_empty() {
+                break;
+            }
+            rounds += 1;
+            let over_limit = rounds > self.max_tool_steps;
+            for call in calls {
+                let request = ToolRequest {
+                    call_id: format!("call_{next_call}"),
+                    name: call.name,
+                    arguments: call.arguments,
+                };
+                next_call += 1;
+                self.run_tool(run, &ir, request, over_limit).await?;
+            }
+            if over_limit {
+                break;
+            }
+        }
+        Ok(self.store.transaction(|tx| tx.complete_run(&run.id))?)
+    }
+
+    /// Records a requested call, asks the gate, runs it if allowed, and records the outcome.
+    async fn run_tool(
+        &self,
+        run: &Run,
+        ir: &InferenceIr,
+        request: ToolRequest,
+        over_limit: bool,
+    ) -> Result<(), StageFailure> {
+        let call_id = request.call_id.clone();
+        self.store.transaction(|tx| {
+            tx.append_event(
+                &run.id,
+                EventData::ToolRequested {
+                    call_id: call_id.clone(),
+                    name: request.name.clone(),
+                    arguments: request.arguments.clone(),
+                },
+            )
         })?;
-        self.store.transaction(|tx| apply_response(tx, run, &validated)).map_err(
-            |error| match error {
-                StoreError::Dag(violation) => StageFailure::new(
-                    ErrorCode::EmissionRejected,
-                    format!("emissions rejected: {violation}"),
-                )
-                .with_evidence(EventData::ResponseRejected { reason: violation.to_string() }),
-                other => StageFailure::from(other),
+        let listed = ir.tools.iter().any(|tool| tool.name == request.name);
+        let decision = match &self.tool_runner {
+            _ if over_limit => ToolDecision::Deny {
+                by: ToolDecider::Limit,
+                reason: format!("the run reached its limit of {} tool rounds", self.max_tool_steps),
             },
-        )
+            Some((_, gate)) if listed => gate.decide(&run.id, &request).await,
+            _ => ToolDecision::Deny {
+                by: ToolDecider::Unavailable,
+                reason: format!("no tool named `{}` is available to this run", request.name),
+            },
+        };
+        let (allowed, by, reason) = match decision {
+            ToolDecision::Allow { by } => (true, by, None),
+            ToolDecision::Deny { by, reason } => (false, by, Some(reason)),
+        };
+        self.store.transaction(|tx| {
+            tx.append_event(
+                &run.id,
+                EventData::ToolDecided { call_id: call_id.clone(), allowed, by, reason },
+            )
+        })?;
+        let Some((executor, _)) = self.tool_runner.as_ref().filter(|_| allowed) else {
+            return Ok(());
+        };
+        let output = match tokio::time::timeout(self.tool_timeout, executor.call(&request)).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                ToolOutput { output: serde_json::json!({"error": error}), is_error: true }
+            }
+            Err(_elapsed) => ToolOutput {
+                output: serde_json::json!({
+                    "error": format!("no result within {:?}", self.tool_timeout)
+                }),
+                is_error: true,
+            },
+        };
+        self.store.transaction(|tx| {
+            tx.append_event(
+                &run.id,
+                EventData::ToolCompleted {
+                    call_id,
+                    output: output.output,
+                    is_error: output.is_error,
+                },
+            )
+        })?;
+        Ok(())
     }
 
     /// Asks Jev to classify the run's candidates and applies valid output to the active context.
@@ -391,13 +519,9 @@ impl Runtime {
     }
 }
 
-/// Records `response.validated`, creates the response's nodes and then its edges, and completes
-/// the run. Runs inside one transaction, so any DAG violation leaves no trace of the response.
-fn apply_response(
-    tx: &Tx<'_>,
-    run: &Run,
-    validated: &ValidatedResponse,
-) -> Result<Run, StoreError> {
+/// Records `response.validated` and creates the response's nodes and then its edges. Runs inside
+/// one transaction, so any DAG violation leaves no trace of the response.
+fn apply_response(tx: &Tx<'_>, run: &Run, validated: &ValidatedResponse) -> Result<(), StoreError> {
     let response = validated.response().clone();
     tx.append_event(&run.id, EventData::ResponseValidated { response })?;
     let mut created: BTreeMap<&EmissionRef, NodeId> = BTreeMap::new();
@@ -435,7 +559,7 @@ fn apply_response(
             )?;
         }
     }
-    tx.complete_run(&run.id)
+    Ok(())
 }
 
 /// A failed pipeline stage, recorded on the run rather than returned to the caller.

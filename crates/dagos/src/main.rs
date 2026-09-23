@@ -267,9 +267,10 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
         Command::Keys { action } => keys(action.unwrap_or(Keys::List)),
         Command::Serve { address } => {
             let hub = server::EventHub::new();
-            let workspace = Workspace::open(&cli.dir, Some(hub.listener()), timeout)?
-                .with_mcp_capabilities(&cli.dir, |warning| eprintln!("warning: {warning}"))
-                .await?;
+            let workspace = Workspace::open(&cli.dir, Some(hub.listener()), timeout)?;
+            // The app can ask a person to approve tool calls.
+            workspace.approvals().set_interactive(true);
+            workspace.start_tools(|warning| eprintln!("warning: {warning}")).await?;
             let workspace = Arc::new(workspace);
             let listener = tokio::net::TcpListener::bind(&address)
                 .await
@@ -333,9 +334,8 @@ async fn run(dir: &std::path::Path, args: RunArgs, timeout: Duration) -> Result<
             let _ = stdout.flush();
         }))
     };
-    let workspace = Workspace::open(dir, listener, timeout)?
-        .with_mcp_capabilities(dir, |warning| eprintln!("warning: {warning}"))
-        .await?;
+    let workspace = Workspace::open(dir, listener, timeout)?;
+    workspace.start_tools(|warning| eprintln!("warning: {warning}")).await?;
     let config = args.selection.apply(workspace.run_config().map_err(|e| e.to_string())?)?;
     let project = &workspace.project.id;
     let thread = if args.new { Thread::New(project) } else { Thread::Latest(project) };

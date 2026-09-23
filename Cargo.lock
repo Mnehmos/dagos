@@ -381,6 +381,7 @@ dependencies = [
 name = "dagos"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "clap",
  "dagos-core",
@@ -413,6 +414,7 @@ dependencies = [
 name = "dagos-mcp"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "dagos-core",
  "serde",
  "serde_json",

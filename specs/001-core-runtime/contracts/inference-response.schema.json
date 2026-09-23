@@ -19,7 +19,7 @@
       "items": {"oneOf": [{"$ref": "#/$defs/node_emission"}, {"$ref": "#/$defs/edge_emission"}]}
     },
     "tool_calls": {
-      "description": "Requested tool invocations. Recorded for inspection; DAGOS v0.1 never executes them.",
+      "description": "Requested tool invocations, by the names listed in the IR's tools. DAGOS runs each call the user permits and returns the results in the next IR's tool_results; a response without tool_calls ends the run.",
       "type": "array",
       "items": {
         "type": "object",

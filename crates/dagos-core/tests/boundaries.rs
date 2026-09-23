@@ -20,7 +20,11 @@ const LAYERS: &[(&str, &[&str])] = &[
     ("ir", &["domain", "contracts", "store"]),
     ("provider", &["domain"]),
     ("response", &["domain", "contracts"]),
-    ("runtime", &["domain", "contracts", "store", "context", "ir", "provider", "response"]),
+    ("tools", &["domain"]),
+    (
+        "runtime",
+        &["domain", "contracts", "store", "context", "ir", "provider", "response", "tools"],
+    ),
 ];
 
 /// Crates that would pull transport or provider-SDK concerns into the core.

@@ -1,6 +1,8 @@
 //! A minimal stdio MCP server used by `dagos-mcp`'s tests.
 //!
-//! It answers `initialize` and serves two tools over two `tools/list` pages. The first argument
+//! It answers `initialize`, serves two tools over two `tools/list` pages, and answers
+//! `tools/call`: `read_file` returns text (after asking the client for its roots, which a client
+//! may decline), `search` returns an image and reports an error. The first argument
 //! selects a misbehaviour instead: `--exit` quits at once, `--silent` never answers, and
 //! `--garbage` writes a non-JSON line before answering.
 
@@ -25,6 +27,9 @@ fn main() {
         }
         let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
         let Some(id) = message.get("id").cloned() else { continue };
+        if message.get("method").is_none() {
+            continue; // a client's answer to our own request
+        }
         let reply = match message["method"].as_str() {
             Some("initialize") => json!({"jsonrpc": "2.0", "id": id, "result": {
                 "protocolVersion": "2025-06-18",
@@ -44,6 +49,21 @@ fn main() {
             Some("tools/list") => json!({"jsonrpc": "2.0", "id": id, "result": {
                 "tools": [{"name": "search", "description": "Search the workspace.",
                            "inputSchema": {"type": "object"}}]
+            }}),
+            Some("tools/call") if message["params"]["name"] == "read_file" => {
+                // A server-to-client request the client must answer (or decline) first.
+                let _ =
+                    writeln!(stdout, r#"{{"jsonrpc":"2.0","id":"roots-1","method":"roots/list"}}"#);
+                let _ = stdout.flush();
+                let path =
+                    message["params"]["arguments"]["path"].as_str().unwrap_or("?").to_owned();
+                json!({"jsonrpc": "2.0", "id": id, "result": {
+                    "content": [{"type": "text", "text": format!("contents of {path}")}]
+                }})
+            }
+            Some("tools/call") => json!({"jsonrpc": "2.0", "id": id, "result": {
+                "content": [{"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}],
+                "isError": true
             }}),
             _ => json!({"jsonrpc": "2.0", "id": id,
                         "error": {"code": -32601, "message": "method not found"}}),

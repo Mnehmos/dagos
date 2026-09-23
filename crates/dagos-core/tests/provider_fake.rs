@@ -35,6 +35,7 @@ fn ir() -> InferenceIr {
         }],
         recent_events: vec![],
         tools: vec![],
+        tool_results: vec![],
     }
 }
 

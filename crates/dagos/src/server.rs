@@ -22,6 +22,7 @@ use axum::routing::{get, patch, post, put};
 use dagos_core::domain::{ConversationId, Event, ModelId, ProjectId, ProviderId, RunConfig, RunId};
 use dagos_core::runtime::{RuntimeError, Thread};
 use dagos_core::store::{EventListener, StoreError};
+use dagos_mcp::{McpServer, Policy};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -30,6 +31,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
+use crate::approvals::Answer;
 use crate::inspect::{self, ConversationView, Overview, RunDetail};
 use crate::keys::KeyStore;
 use crate::providers::{
@@ -97,6 +99,10 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/projects/{project}/overview", get(project_overview))
         .route("/api/projects/{project}/config", put(update_project_config))
         .route("/api/conversations/{conversation}", get(conversation).patch(update_conversation))
+        .route("/api/runs/{run}/tools/{call}", post(answer_tool_call))
+        .route("/api/tools", get(tools))
+        .route("/api/tools/servers/{id}", put(save_tool_server).delete(remove_tool_server))
+        .route("/api/tools/servers/{id}/policy", put(set_tool_policy))
         .route("/api/settings", get(settings))
         .route("/api/settings/providers/{id}", put(save_provider).delete(remove_provider))
         .route("/api/settings/providers/{id}/key", put(save_key).delete(remove_key))
@@ -605,6 +611,164 @@ async fn save_jev(
 /// `DELETE /api/settings/jev`: classify with the offline policy only.
 async fn clear_jev(State(state): State<Arc<AppState>>) -> Result<Json<Settings>, ApiError> {
     edit(&state, |workspace| providers::set_jev(workspace.dir(), None).map_err(ApiError::Internal))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolAnswer {
+    /// `allow` or `deny`.
+    decision: String,
+    /// With `allow`: also set the tool's policy to `allow`, so later calls run without asking.
+    #[serde(default)]
+    remember: bool,
+}
+
+/// `POST /api/runs/{run}/tools/{call}`: a person's answer to a call waiting for approval.
+async fn answer_tool_call(
+    State(state): State<Arc<AppState>>,
+    Path((run, call)): Path<(String, String)>,
+    Json(request): Json<ToolAnswer>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let run = RunId::parse(run).map_err(ApiError::bad_request)?;
+    let answer = match request.decision.as_str() {
+        "allow" => Answer::Allow,
+        "deny" => Answer::Deny,
+        other => return Err(ApiError::BadRequest(format!("unknown decision `{other}`"))),
+    };
+    let workspace = &state.workspace;
+    if !workspace.approvals().is_pending(&run, &call) {
+        return Err(ApiError::Conflict(format!("call `{call}` of run `{run}` is not waiting")));
+    }
+    if request.remember && answer == Answer::Allow {
+        let name = inspect::run_detail(&workspace.store, &run)?
+            .and_then(|detail| detail.tool_calls.into_iter().find(|c| c.call_id == call))
+            .map(|call| call.name)
+            .ok_or_else(|| ApiError::NotFound(format!("call `{call}` not found")))?;
+        let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
+        if let Some((server_id, tool)) = name.split_once('.')
+            && let Some(server) = config.servers.iter_mut().find(|s| s.id == server_id)
+        {
+            server.tools.insert(tool.to_owned(), Policy::Allow);
+            workspace.set_tool_policies(config).map_err(ApiError::Internal)?;
+        }
+    }
+    let answered = workspace.approvals().answer(&run, &call, answer);
+    Ok(Json(json!({"answered": answered})))
+}
+
+/// The tools view: the configuration, what each server offers, and where it is stored.
+fn tools_view(workspace: &Workspace) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = workspace.mcp_config().map_err(ApiError::Internal)?;
+    Ok(Json(json!({
+        "config": config,
+        "capabilities": workspace.capabilities(),
+        "file": workspace.dir().join(crate::workspace::MCP_FILE),
+    })))
+}
+
+/// `GET /api/tools`.
+async fn tools(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
+    tools_view(&state.workspace)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ToolServerRequest {
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default = "enabled")]
+    enabled: bool,
+}
+
+/// `PUT /api/tools/servers/{id}`: adds or changes an MCP server (keeping its tool policies) and
+/// restarts the tools.
+async fn save_tool_server(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<ToolServerRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !dagos_mcp::valid_server_id(&id) {
+        return Err(ApiError::BadRequest(format!(
+            "invalid server id `{id}`: use letters, digits, - and _"
+        )));
+    }
+    let workspace = &state.workspace;
+    let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
+    let cwd = request.cwd.map(|cwd| cwd.trim().to_owned()).filter(|cwd| !cwd.is_empty());
+    let args: Vec<String> = request.args.into_iter().filter(|arg| !arg.is_empty()).collect();
+    match config.servers.iter_mut().find(|server| server.id == id) {
+        Some(server) => {
+            server.command = request.command.trim().to_owned();
+            server.args = args;
+            server.cwd = cwd;
+            server.enabled = request.enabled;
+        }
+        None => {
+            let mut server = McpServer::new(id, request.command.trim(), args);
+            server.cwd = cwd;
+            server.enabled = request.enabled;
+            config.servers.push(server);
+        }
+    }
+    config.save(&workspace.dir().join(crate::workspace::MCP_FILE)).map_err(ApiError::BadRequest)?;
+    workspace.start_tools(|_| {}).await.map_err(ApiError::Internal)?;
+    tools_view(workspace)
+}
+
+/// `DELETE /api/tools/servers/{id}`: removes an MCP server and restarts the tools.
+async fn remove_tool_server(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let workspace = &state.workspace;
+    let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
+    let before = config.servers.len();
+    config.servers.retain(|server| server.id != id);
+    if config.servers.len() == before {
+        return Err(ApiError::NotFound(format!("no MCP server `{id}`")));
+    }
+    config.save(&workspace.dir().join(crate::workspace::MCP_FILE)).map_err(ApiError::Internal)?;
+    workspace.start_tools(|_| {}).await.map_err(ApiError::Internal)?;
+    tools_view(workspace)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyRequest {
+    /// One tool, by the server's own name; without it, every tool of the server.
+    #[serde(default)]
+    tool: Option<String>,
+    policy: Policy,
+}
+
+/// `PUT /api/tools/servers/{id}/policy`: sets one tool's policy, or every tool's, without
+/// restarting the server.
+async fn set_tool_policy(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<PolicyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let workspace = &state.workspace;
+    let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
+    let server = config
+        .servers
+        .iter_mut()
+        .find(|server| server.id == id)
+        .ok_or_else(|| ApiError::NotFound(format!("no MCP server `{id}`")))?;
+    match request.tool {
+        Some(tool) => {
+            server.tools.insert(tool, request.policy);
+        }
+        None => {
+            server.policy = request.policy;
+            server.tools.clear();
+        }
+    }
+    workspace.set_tool_policies(config).map_err(ApiError::Internal)?;
+    tools_view(workspace)
 }
 
 /// `GET /api/stream`: server-sent events. Each `event` message carries one committed event as

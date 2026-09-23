@@ -25,12 +25,15 @@ pub(crate) use dag::closed_enum;
 pub use context::{Classification, ContextMember, ContextSource};
 pub use conversation::{ConversationTurn, Role};
 pub use dag::{DagEdge, DagNode, EdgeType, NodeType, Payload, UnknownVariant};
-pub use event::{Event, EventData};
+pub use event::{Event, EventData, ToolDecider};
 pub use ids::{
     ConversationId, EdgeId, EventId, IdError, IdGenerator, NodeId, ProjectId, RandomIds, RunId,
     SequentialIds,
 };
-pub use ir::{InferenceIr, IrContextItem, IrEvent, IrEventType, IrRelation, IrTask, IrTool};
+pub use ir::{
+    InferenceIr, IrContextItem, IrEvent, IrEventType, IrRelation, IrTask, IrTool, IrToolResult,
+    IrToolStatus,
+};
 pub use jev::{ContextClassification, JevCandidate, JevEdge, JevRequest, NodeClassification};
 pub use project::{Conversation, Project};
 pub use response::{

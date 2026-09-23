@@ -19,6 +19,7 @@
 //! | [`ir`]       | deterministic compilation of active context into IR          | domain, contracts, store        |
 //! | [`provider`] | common inference adapter interface and the fake provider     | domain                          |
 //! | [`response`] | fail-closed validation of structured provider output         | domain, contracts               |
+//! | [`tools`]    | tool gate and executor interfaces for requested tool calls   | domain                          |
 //! | [`runtime`]  | run lifecycle wiring the layers together                     | all of the above                |
 //!
 //! Invariants protected by these boundaries:
@@ -35,3 +36,4 @@ pub mod provider;
 pub mod response;
 pub mod runtime;
 pub mod store;
+pub mod tools;
