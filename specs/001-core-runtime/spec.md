@@ -37,6 +37,7 @@ FR-021 A model-backed Jev is optional: when it fails or its output is rejected, 
 FR-022 Provider API keys can be managed in the app; saved keys live per user outside the project and never appear in the database, the IR, or API responses.
 FR-023 Runs belong to conversations inside a project: a conversation carries active context between its runs and gives the IR its recent turns (request and reply); all conversations of a project share its durable DAG. Conversations are renamed or archived, never deleted.
 FR-024 Jev may also classify tool candidates active or inactive per run; only tools it does not mark inactive are compiled into the IR. Tool permission remains with the tool policy and the person.
+FR-025 The IR carries only a conversation's most recent turns (8 by default). Older turns are never summarized away: while a conversation has any, the run offers the built-in `dagos.recall` tool, which returns the earlier turns relevant to a query verbatim (each turn is one chunk, judged relevant or not by Jev, or by word overlap without a model Jev) with `before` / `after` cursors to neighbouring turns. Recall reads only the run's own conversation, so it needs no approval.
 
 ## Acceptance Scenarios
 1. Empty project + user message creates conversation state and a run.

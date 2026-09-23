@@ -113,7 +113,7 @@ pub struct IrEvent {
     pub prose: Option<String>,
 }
 
-/// A capability description. Descriptive only: DAGOS v0.1 never executes tools.
+/// A tool the model may call. DAGOS runs the calls a person permits.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IrTool {

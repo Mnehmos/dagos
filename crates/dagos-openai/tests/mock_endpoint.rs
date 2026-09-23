@@ -499,3 +499,49 @@ async fn typesafe_jev_also_decides_which_tools_the_model_sees() {
     assert_eq!(question["instructions"]["tool"]["name"], "ooda.mouse_click");
     assert_eq!(captured.body["questions"].as_object().unwrap().len(), 5, "2 nodes + 3 tools");
 }
+
+fn recall_chunk(id: &str, text: &str) -> dagos_core::context::recall::RecallChunk {
+    dagos_core::context::recall::RecallChunk { id: id.into(), text: text.into() }
+}
+
+#[tokio::test]
+async fn typesafe_jev_judges_recall_relevance_one_question_per_turn() {
+    use dagos_core::context::JevClassifier;
+    let chunks = [
+        recall_chunk("run_000001", "user: Plan a trip to Lisbon"),
+        recall_chunk("run_000002", "user: My sister is allergic to shellfish"),
+    ];
+    let response = json!({"answers": {
+        "run_000001": {"type": "noul", "noul": 0.08},
+        "run_000002": {"type": "noul", "noul": 0.97}
+    }})
+    .to_string();
+    let (base_url, request) = mock("200 OK", "application/json", vec![response]).await;
+    let jev =
+        DecisionsJev::new(provider(&base_url, true), ModelId::parse("typesafe/jev-1.13").unwrap());
+    assert!(jev.judges_relevance());
+    let scores = jev.relevance("sister food allergy", &chunks).await.unwrap();
+    assert_eq!(scores, [0.08, 0.97]);
+
+    let captured = request.await.unwrap();
+    assert!(captured.head.starts_with("POST /alpha/decisions HTTP/1.1"), "{}", captured.head);
+    assert_eq!(captured.body["state"], json!({"query": "sister food allergy"}));
+    let question = &captured.body["questions"]["run_000002"];
+    assert_eq!(question["type"], "noul");
+    assert_eq!(question["instructions"]["turn"], "user: My sister is allergic to shellfish");
+}
+
+#[test]
+fn recall_searches_are_split_into_judge_sized_batches() {
+    let big = "x".repeat(dagos_openai::RECALL_BATCH_CHARS / 2 + 1);
+    let chunks: Vec<_> = (1..=5).map(|i| recall_chunk(&format!("run_00000{i}"), &big)).collect();
+    let sizes: Vec<usize> = dagos_openai::recall_batches(&chunks).iter().map(|b| b.len()).collect();
+    assert_eq!(sizes, [1, 1, 1, 1, 1]);
+    let small: Vec<_> = (1..=5).map(|i| recall_chunk(&format!("run_00000{i}"), "hi")).collect();
+    assert_eq!(dagos_openai::recall_batches(&small).len(), 1);
+    assert!(dagos_openai::recall_batches(&[]).is_empty());
+
+    let missing = json!({"answers": {"run_000001": {"type": "noul", "noul": 0.5}}});
+    let error = dagos_openai::relevance_from_decisions(&small[..2], &missing).unwrap_err();
+    assert!(error.contains("no answer for run_000002"), "{error}");
+}

@@ -14,6 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::context::recall::{
+    RECALL_TOOL, RecallQuery, conversation_chunks, cursor_output, earlier_turns, lexical_relevance,
+    recall_tool, search_output,
+};
 use crate::context::{
     JevClassifier, apply_classification, carry_context, classification_request,
     validate_classification,
@@ -24,7 +28,7 @@ use crate::domain::{
     ErrorCode, EventData, InferenceIr, IrTool, JevRequest, NodeId, NodeType, ProjectId, ProviderId,
     Run, RunConfig, RunId, ToolDecider,
 };
-use crate::ir::{CompileError, compile};
+use crate::ir::{CompileError, RECENT_RUN_OUTCOMES, compile_with};
 use crate::provider::{DeltaSink, InferenceProvider, InferenceRequest};
 use crate::response::{ValidatedResponse, validate_response};
 use crate::store::{Store, StoreError, Tx};
@@ -76,6 +80,7 @@ pub struct Runtime {
     tool_runner: Option<(Arc<dyn ToolExecutor>, Arc<dyn ToolGate>)>,
     max_tool_steps: usize,
     tool_timeout: Duration,
+    conversation_window: usize,
     inference_timeout: Duration,
     jev_timeout: Duration,
 }
@@ -97,6 +102,7 @@ impl Runtime {
             tool_runner: None,
             max_tool_steps: DEFAULT_MAX_TOOL_STEPS,
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
+            conversation_window: RECENT_RUN_OUTCOMES,
             inference_timeout: DEFAULT_INFERENCE_TIMEOUT,
             jev_timeout: DEFAULT_JEV_TIMEOUT,
         }
@@ -147,6 +153,14 @@ impl Runtime {
 
     pub fn with_tool_timeout(mut self, timeout: Duration) -> Self {
         self.tool_timeout = timeout;
+        self
+    }
+
+    /// How many of the conversation's most recent earlier turns IR carries. Older turns stay on
+    /// disk; while a conversation has any, runs offer the model the `dagos.recall` tool to search
+    /// them.
+    pub fn with_conversation_window(mut self, turns: usize) -> Self {
+        self.conversation_window = turns;
         self
     }
 
@@ -300,7 +314,11 @@ impl Runtime {
         provider: &dyn InferenceProvider,
     ) -> Result<Run, StageFailure> {
         let classification = self.classify_context(run, task, message).await?;
-        let tools = exposed_tools(&self.tools, &classification);
+        let mut tools = exposed_tools(&self.tools, &classification);
+        let window = self.conversation_window;
+        if self.store.transaction(|tx| earlier_turns(tx, &run.id, window + 1))? > window {
+            tools.push(recall_tool());
+        }
         let mut rounds = 0;
         let mut next_call = 1;
         loop {
@@ -362,11 +380,14 @@ impl Runtime {
             )
         })?;
         let listed = ir.tools.iter().any(|tool| tool.name == request.name);
+        let recall = listed && request.name == RECALL_TOOL;
         let decision = match &self.tool_runner {
             _ if over_limit => ToolDecision::Deny {
                 by: ToolDecider::Limit,
                 reason: format!("the run reached its limit of {} tool rounds", self.max_tool_steps),
             },
+            // Recall only reads this conversation's own history, so it needs no approval.
+            _ if recall => ToolDecision::Allow { by: ToolDecider::Policy },
             Some((_, gate)) if listed => gate.decide(&run.id, &request).await,
             _ => ToolDecision::Deny {
                 by: ToolDecider::Unavailable,
@@ -383,20 +404,14 @@ impl Runtime {
                 EventData::ToolDecided { call_id: call_id.clone(), allowed, by, reason },
             )
         })?;
-        let Some((executor, _)) = self.tool_runner.as_ref().filter(|_| allowed) else {
+        if !allowed {
             return Ok(());
-        };
-        let output = match tokio::time::timeout(self.tool_timeout, executor.call(&request)).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(error)) => {
-                ToolOutput { output: serde_json::json!({"error": error}), is_error: true }
-            }
-            Err(_elapsed) => ToolOutput {
-                output: serde_json::json!({
-                    "error": format!("no result within {:?}", self.tool_timeout)
-                }),
-                is_error: true,
-            },
+        }
+        let output = if recall {
+            self.recall(run, &request).await?
+        } else {
+            let Some((executor, _)) = &self.tool_runner else { return Ok(()) };
+            self.call_tool(executor.as_ref(), &request).await
         };
         self.store.transaction(|tx| {
             tx.append_event(
@@ -409,6 +424,78 @@ impl Runtime {
             )
         })?;
         Ok(())
+    }
+
+    /// Runs `request` on `executor` under the tool deadline.
+    async fn call_tool(&self, executor: &dyn ToolExecutor, request: &ToolRequest) -> ToolOutput {
+        match tokio::time::timeout(self.tool_timeout, executor.call(request)).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                ToolOutput { output: serde_json::json!({"error": error}), is_error: true }
+            }
+            Err(_elapsed) => ToolOutput {
+                output: serde_json::json!({
+                    "error": format!("no result within {:?}", self.tool_timeout)
+                }),
+                is_error: true,
+            },
+        }
+    }
+
+    /// Answers a `dagos.recall` call from the conversation's earlier turns: the turn a cursor
+    /// names, or the turns Jev judges relevant to the query. Word overlap judges instead when Jev
+    /// does not judge relevance or fails to.
+    async fn recall(&self, run: &Run, request: &ToolRequest) -> Result<ToolOutput, StageFailure> {
+        let failed = |message: String| ToolOutput {
+            output: serde_json::json!({"error": message}),
+            is_error: true,
+        };
+        let query = match RecallQuery::parse(&request.arguments) {
+            Ok(query) => query,
+            Err(message) => return Ok(failed(message)),
+        };
+        let chunks = self.store.transaction(|tx| conversation_chunks(tx, &run.id))?;
+        let query = match query {
+            RecallQuery::Cursor(cursor) => {
+                return Ok(match cursor_output(&cursor, &chunks) {
+                    Some(output) => ToolOutput { output, is_error: false },
+                    None => {
+                        failed(format!("`{cursor}` is not an earlier turn of this conversation"))
+                    }
+                });
+            }
+            RecallQuery::Search(query) => query,
+        };
+        let mut scored_by = "word overlap".to_owned();
+        let mut scores = None;
+        if self.jev.judges_relevance() && !chunks.is_empty() {
+            let judged =
+                tokio::time::timeout(self.jev_timeout, self.jev.relevance(&query, &chunks))
+                    .await
+                    .map_err(|_elapsed| format!("no answer within {:?}", self.jev_timeout))
+                    .and_then(|result| result.map_err(|error| error.to_string()))
+                    .and_then(|judged| {
+                        let valid = judged.len() == chunks.len()
+                            && judged.iter().all(|p| (0.0..=1.0).contains(p));
+                        if valid {
+                            Ok(judged)
+                        } else {
+                            Err("malformed relevance scores".to_owned())
+                        }
+                    });
+            match judged {
+                Ok(judged) => {
+                    scores = Some(judged);
+                    scored_by = self.jev.id().to_owned();
+                }
+                Err(error) => scored_by = format!("word overlap (Jev failed: {error})"),
+            }
+        }
+        let scores = scores.unwrap_or_else(|| lexical_relevance(&query, &chunks));
+        Ok(ToolOutput {
+            output: search_output(&query, &chunks, &scores, &scored_by),
+            is_error: false,
+        })
     }
 
     /// Asks Jev to classify the run's candidates and applies valid output to the active context.
@@ -477,12 +564,14 @@ impl Runtime {
         tools: &[IrTool],
     ) -> Result<InferenceIr, StageFailure> {
         self.store.transaction(|tx| {
-            let ir = compile(tx, &run.id, task, tools).map_err(|error| match error {
-                CompileError::Contract(violation) => {
-                    StageFailure::new(ErrorCode::IrInvalid, violation.to_string())
-                }
-                other => StageFailure::new(ErrorCode::Internal, other.to_string()),
-            })?;
+            let window = self.conversation_window;
+            let ir =
+                compile_with(tx, &run.id, task, tools, window).map_err(|error| match error {
+                    CompileError::Contract(violation) => {
+                        StageFailure::new(ErrorCode::IrInvalid, violation.to_string())
+                    }
+                    other => StageFailure::new(ErrorCode::Internal, other.to_string()),
+                })?;
             tx.append_event(&run.id, EventData::IrCompiled { ir: ir.clone() })?;
             Ok(ir)
         })

@@ -13,6 +13,7 @@ use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use dagos_core::context::recall::RecallChunk;
 use dagos_core::context::{JevClassifier, JevError};
 use dagos_core::domain::JevRequest;
 use dagos_core::domain::{ModelId, ProviderId};
@@ -21,8 +22,9 @@ use serde_json::Value;
 
 pub use prose::ProseExtractor;
 pub use protocol::{
-    ACTIVE_THRESHOLD, classification_from_decisions, decisions_body, jev_request_body,
-    jev_system_message, request_body, system_message, unwrap_document, user_message,
+    ACTIVE_THRESHOLD, RECALL_BATCH_CHARS, classification_from_decisions, decisions_body,
+    jev_request_body, jev_system_message, recall_batches, recall_body, relevance_from_decisions,
+    request_body, system_message, unwrap_document, user_message,
 };
 pub use sse::SseDecoder;
 
@@ -297,18 +299,37 @@ impl JevClassifier for DecisionsJev {
     }
 
     async fn classify(&self, request: &JevRequest) -> Result<String, JevError> {
-        if request.candidates.is_empty() {
+        if request.candidates.is_empty() && request.tools.is_empty() {
             return classification_from_decisions(request, &serde_json::json!({"answers": {}}))
                 .map_err(JevError);
         }
-        let body = decisions_body(&self.model, request);
+        let response = self.decide(decisions_body(&self.model, request)).await?;
+        classification_from_decisions(request, &response).map_err(JevError)
+    }
+
+    async fn relevance(&self, query: &str, chunks: &[RecallChunk]) -> Result<Vec<f64>, JevError> {
+        let mut scores = Vec::with_capacity(chunks.len());
+        for batch in recall_batches(chunks) {
+            let response = self.decide(recall_body(&self.model, query, batch)).await?;
+            scores.extend(relevance_from_decisions(batch, &response).map_err(JevError)?);
+        }
+        Ok(scores)
+    }
+
+    fn judges_relevance(&self) -> bool {
+        true
+    }
+}
+
+impl DecisionsJev {
+    /// Sends one Decisions API request and returns its JSON answer.
+    async fn decide(&self, body: Value) -> Result<Value, JevError> {
         let http = self
             .chat
             .client
             .post(&self.url)
             .header("content-type", "application/json")
             .body(body.to_string());
-        let response = self.chat.send_json(&self.url, http).await.map_err(JevError)?;
-        classification_from_decisions(request, &response).map_err(JevError)
+        self.chat.send_json(&self.url, http).await.map_err(JevError)
     }
 }

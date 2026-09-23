@@ -14,7 +14,8 @@ use crate::domain::{
 };
 use crate::store::{StoreError, Tx};
 
-/// How many of the conversation's most recent earlier turns IR carries in `recent_events`.
+/// How many of the conversation's most recent earlier turns IR carries in `recent_events` by
+/// default.
 pub const RECENT_RUN_OUTCOMES: usize = 8;
 
 /// Why IR could not be compiled.
@@ -38,6 +39,17 @@ pub fn compile(
     run_id: &RunId,
     task_node: &NodeId,
     tools: &[IrTool],
+) -> Result<InferenceIr, CompileError> {
+    compile_with(tx, run_id, task_node, tools, RECENT_RUN_OUTCOMES)
+}
+
+/// [`compile`] with `recent_events` holding at most `window` earlier turns.
+pub fn compile_with(
+    tx: &Tx<'_>,
+    run_id: &RunId,
+    task_node: &NodeId,
+    tools: &[IrTool],
+    window: usize,
 ) -> Result<InferenceIr, CompileError> {
     let run = tx.run(run_id)?.ok_or_else(|| not_found("run", run_id))?;
     let task = tx.node(task_node)?.ok_or_else(|| not_found("node", task_node))?;
@@ -71,7 +83,7 @@ pub fn compile(
         system_prompt: run.system_prompt.clone(),
         task: IrTask { node_id: task.id, message },
         context,
-        recent_events: recent_run_outcomes(tx, run_id)?,
+        recent_events: recent_run_outcomes(tx, run_id, window)?,
         tools: tools.to_vec(),
         tool_results: tool_results(tx, run_id)?,
     };
@@ -81,10 +93,14 @@ pub fn compile(
 
 /// The conversation's most recent turns before `run_id`, oldest first: each turn's message and
 /// how it ended.
-fn recent_run_outcomes(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrEvent>, StoreError> {
+fn recent_run_outcomes(
+    tx: &Tx<'_>,
+    run_id: &RunId,
+    window: usize,
+) -> Result<Vec<IrEvent>, StoreError> {
     let mut earlier = Vec::new();
     let mut cursor = run_id.clone();
-    while earlier.len() < RECENT_RUN_OUTCOMES {
+    while earlier.len() < window {
         let Some(previous) = tx.previous_run(&cursor)? else { break };
         cursor = previous.id.clone();
         earlier.push(previous);

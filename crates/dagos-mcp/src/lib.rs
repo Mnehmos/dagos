@@ -101,9 +101,12 @@ impl McpServer {
     }
 }
 
-/// Whether `id` can name a server: letters, digits, `-` and `_`.
+/// Whether `id` can name a server: letters, digits, `-` and `_`, but not `dagos`, which names
+/// DAGOS's own tools (such as `dagos.recall`).
 pub fn valid_server_id(id: &str) -> bool {
-    !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    !id.is_empty()
+        && !id.eq_ignore_ascii_case("dagos")
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 impl McpConfig {
@@ -133,7 +136,7 @@ impl McpConfig {
         for server in &self.servers {
             if !valid_server_id(&server.id) {
                 return Err(format!(
-                    "invalid MCP server id `{}`: use letters, digits, - and _",
+                    "invalid MCP server id `{}`: use letters, digits, - and _ (not `dagos`)",
                     server.id
                 ));
             }

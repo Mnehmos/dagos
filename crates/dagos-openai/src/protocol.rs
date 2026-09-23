@@ -4,6 +4,7 @@
 //! instructions and the response schema. The user message is the IR itself, as compact JSON: the
 //! model receives machine-readable input and must answer with one machine-readable document.
 
+use dagos_core::context::recall::RecallChunk;
 use dagos_core::contracts::Contract;
 use dagos_core::domain::{InferenceIr, JevRequest, ModelId, NodeType};
 use serde_json::{Value, json};
@@ -15,7 +16,9 @@ The user message is a kiss.inference-ir.v1 JSON document:
 - task.message is the request to answer; task.node_id is its durable node.
 - context lists the durable DAG nodes that are active for this request, with their relations.
 - recent_events is the conversation so far, oldest first: each earlier turn's request (the user's \
-message) and your reply (prose), or why that turn failed.
+message) and your reply (prose), or why that turn failed. It holds only the most recent turns; \
+when the dagos.recall tool is listed, older turns exist and it searches them. Use it when the \
+request refers to something said earlier that recent_events does not show.
 - tools, if present, are tools you may use. To use them, list calls in \"tool_calls\" (name exactly \
 as listed, arguments matching its input_schema). DAGOS runs the calls the person permits and sends \
 you a new IR whose tool_results say what each returned, failed with, or why it was denied; keep \
@@ -236,6 +239,80 @@ pub fn classification_from_decisions(
         document["tools"] = json!(tools);
     }
     Ok(document.to_string())
+}
+
+/// The most chunk text one recall Decisions request carries; larger searches are split.
+pub const RECALL_BATCH_CHARS: usize = 40_000;
+
+/// Splits `chunks` into consecutive batches of at most [`RECALL_BATCH_CHARS`] characters of text
+/// (a batch always holds at least one chunk).
+pub fn recall_batches(chunks: &[RecallChunk]) -> Vec<&[RecallChunk]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut size = 0;
+    for (index, chunk) in chunks.iter().enumerate() {
+        let length = chunk.text.chars().count();
+        if index > start && size + length > RECALL_BATCH_CHARS {
+            batches.push(&chunks[start..index]);
+            start = index;
+            size = 0;
+        }
+        size += length;
+    }
+    if start < chunks.len() {
+        batches.push(&chunks[start..]);
+    }
+    batches
+}
+
+/// The Decisions API request judging which of `chunks` (earlier conversation turns) hold
+/// information relevant to `query`: one `noul` question per chunk, keyed by its ID.
+pub fn recall_body(model_id: &ModelId, query: &str, chunks: &[RecallChunk]) -> Value {
+    let questions: serde_json::Map<String, Value> = chunks
+        .iter()
+        .map(|chunk| {
+            let question = json!({
+                "type": "noul",
+                "instructions": {
+                    "task": "Decide whether this earlier turn of the conversation contains \
+                             information relevant to the query in `state.query`.",
+                    "turn": chunk.text,
+                },
+                "criteria": {
+                    "true": "The turn states, asks, or decides something the query is looking for.",
+                    "false": "The turn has nothing the query is looking for.",
+                },
+            });
+            (chunk.id.clone(), question)
+        })
+        .collect();
+    json!({"model": model_id.as_str(), "questions": questions, "state": {"query": query}})
+}
+
+/// Each chunk's relevance from a Decisions API response to [`recall_body`], in chunk order.
+pub fn relevance_from_decisions(
+    chunks: &[RecallChunk],
+    response: &Value,
+) -> Result<Vec<f64>, String> {
+    let answers = response
+        .get("answers")
+        .and_then(Value::as_object)
+        .ok_or("the Decisions response has no `answers` object")?;
+    chunks
+        .iter()
+        .map(|chunk| {
+            let answer = answers
+                .get(&chunk.id)
+                .ok_or_else(|| format!("the Decisions response has no answer for {}", chunk.id))?;
+            answer
+                .get("noul")
+                .and_then(Value::as_f64)
+                .filter(|p| (0.0..=1.0).contains(p))
+                .ok_or_else(|| {
+                    format!("the answer for {} is not a noul probability: {answer}", chunk.id)
+                })
+        })
+        .collect()
 }
 
 /// The Decisions question key for a tool; the prefix keeps it apart from node IDs.

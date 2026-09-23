@@ -774,7 +774,7 @@ async fn save_tool_server(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if !dagos_mcp::valid_server_id(&id) {
         return Err(ApiError::BadRequest(format!(
-            "invalid server id `{id}`: use letters, digits, - and _"
+            "invalid server id `{id}`: use letters, digits, - and _ (not `dagos`)"
         )));
     }
     let workspace = &state.workspace;

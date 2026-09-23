@@ -2,6 +2,7 @@
 
 use async_trait::async_trait;
 
+use super::recall::{RecallChunk, lexical_relevance};
 use crate::domain::JevRequest;
 
 /// A Jev endpoint could not produce any output (e.g. it was unreachable). Output that *was*
@@ -22,4 +23,16 @@ pub trait JevClassifier: Send + Sync {
 
     /// Classifies context membership for `request`, returning raw output text.
     async fn classify(&self, request: &JevRequest) -> Result<String, JevError>;
+
+    /// For each chunk, the probability that it holds information relevant to `query`, in chunk
+    /// order. Used by recall to find earlier conversation turns. The default judges by shared
+    /// words, without a model.
+    async fn relevance(&self, query: &str, chunks: &[RecallChunk]) -> Result<Vec<f64>, JevError> {
+        Ok(lexical_relevance(query, chunks))
+    }
+
+    /// Whether [`JevClassifier::relevance`] is judged by a model rather than by shared words.
+    fn judges_relevance(&self) -> bool {
+        false
+    }
 }

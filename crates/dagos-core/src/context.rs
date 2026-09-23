@@ -8,6 +8,7 @@
 mod fake_jev;
 mod jev;
 mod projection;
+pub mod recall;
 
 pub use fake_jev::{DEFAULT_CONVERSATION_WINDOW, FakeJev};
 pub use jev::{JevClassifier, JevError};

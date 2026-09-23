@@ -78,6 +78,7 @@ fn configuration_is_optional_and_validated() {
     for text in [
         "nope",
         r#"{"servers": [{"id": "bad id", "command": "x"}]}"#,
+        r#"{"servers": [{"id": "dagos", "command": "x"}]}"#,
         r#"{"servers": [{"id": "fs", "command": "x", "env": {}}]}"#,
         r#"{"servers": [{"id": "fs", "command": "x", "policy": "sometimes"}]}"#,
         r#"{"servers": [{"id": "fs", "command": "x"}, {"id": "fs", "command": "y"}]}"#,
