@@ -9,10 +9,11 @@ use dagos_core::domain::{
     ErrorCode, EventData, InferenceIr, InferenceIrSchema, IrTask, ModelId, NodeId, NodeType,
     ProviderId, RunConfig, RunStatus,
 };
+use dagos_core::provider::FakeProvider;
 use dagos_core::provider::{CollectDeltas, InferenceProvider, InferenceRequest, ProviderError};
 use dagos_core::runtime::Runtime;
 use dagos_core::store::Store;
-use dagos_openai::{OpenAiCompatible, OpenAiCompatibleConfig};
+use dagos_openai::{OpenAiCompatible, OpenAiCompatibleConfig, OpenAiCompatibleJev};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -261,8 +262,15 @@ async fn live_endpoint_completes_a_run() {
         models: vec![],
         json_mode: std::env::var("DAGOS_LIVE_JSON_MODE").map_or(true, |value| value != "0"),
     });
+    let jev: Arc<dyn dagos_core::context::JevClassifier> =
+        match std::env::var("DAGOS_LIVE_JEV_MODEL") {
+            Ok(jev_model) => {
+                Arc::new(OpenAiCompatibleJev::new(live.clone(), ModelId::parse(jev_model).unwrap()))
+            }
+            Err(_) => Arc::new(FakeJev::new()),
+        };
     let store = Arc::new(Store::open_in_memory().unwrap());
-    let runtime = Runtime::new(store.clone(), Arc::new(FakeJev::new()))
+    let runtime = Runtime::new(store.clone(), jev)
         .with_provider(Arc::new(live))
         .with_inference_timeout(Duration::from_secs(120));
     let project = store.transaction(|tx| tx.create_project("live")).unwrap().id;
@@ -276,4 +284,74 @@ async fn live_endpoint_completes_a_run() {
     let run = runtime.run(&project, message, &config).await.unwrap();
     let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
     assert_eq!(run.status, RunStatus::Completed, "{:#?}", events.last());
+}
+
+/// A store with two decision nodes for Jev to classify, and a fake-provider run config.
+fn jev_setup() -> (Arc<Store>, dagos_core::domain::ProjectId, [NodeId; 2], RunConfig) {
+    let store = Arc::new(Store::open_in_memory().unwrap());
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let nodes = ["Use SQLite", "Use JSON files"].map(|text| {
+        let mut payload = serde_json::Map::new();
+        payload.insert("text".into(), json!(text));
+        store.transaction(|tx| tx.insert_node(&project, NodeType::Decision, payload)).unwrap().id
+    });
+    let config = RunConfig {
+        provider_id: ProviderId::parse("fake").unwrap(),
+        model_id: ModelId::parse("fake-echo").unwrap(),
+        system_prompt: String::new(),
+    };
+    (store, project, nodes, config)
+}
+
+fn jev_runtime(store: &Arc<Store>, base_url: &str) -> Runtime {
+    let jev =
+        OpenAiCompatibleJev::new(provider(base_url, true), ModelId::parse("mock-jev").unwrap());
+    Runtime::new(store.clone(), Arc::new(jev)).with_provider(Arc::new(FakeProvider::new()))
+}
+
+#[tokio::test]
+async fn a_model_backed_jev_classifies_context_through_the_contract() {
+    let (store, project, [keep, drop], config) = jev_setup();
+    let output = json!({"schema": "kiss.jev-context.v1", "classifications": [
+        {"node_id": keep.as_str(), "classification": "active"},
+        {"node_id": drop.as_str(), "classification": "inactive"}
+    ]})
+    .to_string();
+    let chunks = pieces(&output, 9);
+    let chunk_refs: Vec<&str> = chunks.iter().map(String::as_str).collect();
+    let (base_url, request) = mock("200 OK", "text/event-stream", sse(&chunk_refs)).await;
+
+    let run =
+        jev_runtime(&store, &base_url).run(&project, "Which storage?", &config).await.unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+    let context = store.transaction(|tx| tx.context(&run.id)).unwrap();
+    assert_eq!(context.iter().map(|member| &member.node_id).collect::<Vec<_>>(), [&keep]);
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    assert!(events.iter().any(|event| matches!(
+        &event.data,
+        EventData::JevRequested { jev_id, .. } if jev_id == "mock-jev:mock-jev"
+    )));
+
+    // The classifier received the versioned request and classifier-only instructions.
+    let captured = request.await.unwrap();
+    assert_eq!(captured.body["temperature"], 0);
+    let system = captured.body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.starts_with("You are Jev, the context classifier of DAGOS. You only classify."));
+    let user: Value =
+        serde_json::from_str(captured.body["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(user["schema"], "kiss.jev-request.v1");
+    assert_eq!(user["candidates"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_model_jev_that_plans_instead_of_classifying_is_rejected() {
+    let (store, project, _, config) = jev_setup();
+    let output =
+        r#"{"schema":"kiss.jev-context.v1","classifications":[],"plan":["rewrite it all"]}"#;
+    let (base_url, _) = mock("200 OK", "text/event-stream", sse(&[output])).await;
+
+    let run =
+        jev_runtime(&store, &base_url).run(&project, "Which storage?", &config).await.unwrap();
+    assert_eq!(run.error_code, Some(ErrorCode::JevInvalidOutput));
+    assert!(store.transaction(|tx| tx.context(&run.id)).unwrap().is_empty());
 }

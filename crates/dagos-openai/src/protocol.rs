@@ -5,7 +5,7 @@
 //! model receives machine-readable input and must answer with one machine-readable document.
 
 use dagos_core::contracts::Contract;
-use dagos_core::domain::{InferenceIr, ModelId};
+use dagos_core::domain::{InferenceIr, JevRequest, ModelId};
 use serde_json::{Value, json};
 
 const PROTOCOL: &str = "\
@@ -54,6 +54,47 @@ pub fn request_body(model_id: &ModelId, ir: &InferenceIr, json_mode: bool) -> Va
         "messages": [
             {"role": "system", "content": system_message(ir)},
             {"role": "user", "content": user_message(ir)},
+        ],
+    });
+    if json_mode {
+        body["response_format"] = json!({"type": "json_object"});
+    }
+    body
+}
+
+const JEV_PROTOCOL: &str = "\
+You are Jev, the context classifier of DAGOS. You only classify.
+
+The user message is a kiss.jev-request.v1 JSON document: the user's `message`, the `candidates` \
+(durable DAG nodes, oldest first, each with `in_context` telling whether it is in the active \
+context carried over from the previous run), and the `edges` between them.
+
+For each candidate, decide whether it belongs in the active context for answering `message`: \
+`active` if it is relevant, `inactive` if it is not (for example superseded by a newer node, \
+stale, or unrelated). Candidates you leave out keep their current membership.
+
+You never answer the message, plan, choose providers or models, call tools, or explain yourself. \
+Reply with exactly one JSON object that satisfies kiss.jev-context.v1 and nothing else: no \
+markdown fences, no text outside the object, no fields beyond the schema. Use only node_ids from \
+`candidates`, each at most once.
+
+The output schema:
+";
+
+/// The system message for a Jev classification: the classifier-only instructions and schema.
+pub fn jev_system_message() -> String {
+    format!("{JEV_PROTOCOL}{}", Contract::JevContext.schema_source().trim())
+}
+
+/// The Chat Completions request body for classifying `request` with `model_id`.
+pub fn jev_request_body(model_id: &ModelId, request: &JevRequest, json_mode: bool) -> Value {
+    let mut body = json!({
+        "model": model_id.as_str(),
+        "stream": true,
+        "temperature": 0,
+        "messages": [
+            {"role": "system", "content": jev_system_message()},
+            {"role": "user", "content": serde_json::to_string(request).expect("requests serialize")},
         ],
     });
     if json_mode {

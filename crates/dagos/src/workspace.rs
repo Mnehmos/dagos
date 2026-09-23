@@ -4,7 +4,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dagos_core::context::FakeJev;
 use dagos_core::domain::{ModelId, Project, ProviderId, RunConfig};
 use dagos_core::provider::FakeProvider;
 use dagos_core::runtime::Runtime;
@@ -68,14 +67,14 @@ impl Workspace {
             .into_iter()
             .next()
             .ok_or_else(|| format!("the database in {} has no project", dir.display()))?;
-        let providers = providers::load(
+        let loaded = providers::load(
             dir,
             |name| std::env::var(name).ok(),
             |warning| eprintln!("warning: {warning}"),
         )?;
-        let mut runtime = Runtime::new(store.clone(), Arc::new(FakeJev::new()))
-            .with_inference_timeout(inference_timeout);
-        for provider in providers {
+        let mut runtime =
+            Runtime::new(store.clone(), loaded.jev).with_inference_timeout(inference_timeout);
+        for provider in loaded.providers {
             runtime = runtime.with_provider(provider);
         }
         Ok(Self { store, project, runtime, capabilities: None })

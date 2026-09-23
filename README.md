@@ -64,6 +64,22 @@ them. Then, for example:
 cargo run -p dagos -- run "Summarize the open tasks" --provider openrouter --model <model id>
 ```
 
+### A model-backed Jev (optional)
+
+Jev defaults to an offline policy classifier. To let a model classify context instead, name a
+configured provider and model, either in the environment:
+
+```bash
+export OPENROUTER_API_KEY=<key>
+export DAGOS_JEV_PROVIDER=openrouter DAGOS_JEV_MODEL=<model id>
+```
+
+or in `.dagos/providers.json` as `"jev": {"provider": "openrouter", "model": "<model id>"}` (the
+environment wins). The model only classifies: it receives the `kiss.jev-request.v1` document and
+must answer with one `kiss.jev-context.v1` object. Anything else (plans, prose, unknown nodes, extra
+fields) fails the run with `jev_invalid_output` before inference starts, and the DAG is unchanged.
+Each run's `jev.requested` event records which classifier was used, e.g. `openrouter-jev:<model>`.
+
 ### MCP (optional)
 
 DAGOS never needs MCP. To describe MCP tools to models, list stdio servers in `.dagos/mcp.json`:
@@ -95,6 +111,8 @@ To check a real endpoint (opt-in, needs network and usually a key):
 ```bash
 DAGOS_LIVE_BASE_URL=https://openrouter.ai/api/v1 DAGOS_LIVE_MODEL=<model> DAGOS_LIVE_API_KEY=<key> cargo test -p dagos-openai -- --ignored
 ```
+
+Add `DAGOS_LIVE_JEV_MODEL=<model>` to classify context with a live model too.
 
 ## Development
 

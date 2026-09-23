@@ -16,6 +16,8 @@ fn dagos(dir: &Path, args: &[&str]) -> Output {
         .env_remove("OPENROUTER_API_KEY")
         .env_remove("OPENAI_API_KEY")
         .env_remove("DAGOS_INFERENCE_TIMEOUT")
+        .env_remove("DAGOS_JEV_PROVIDER")
+        .env_remove("DAGOS_JEV_MODEL")
         .output()
         .expect("dagos runs")
 }

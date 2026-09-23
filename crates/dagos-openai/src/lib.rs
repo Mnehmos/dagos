@@ -13,12 +13,16 @@ use std::fmt;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use dagos_core::context::{JevClassifier, JevError};
+use dagos_core::domain::JevRequest;
 use dagos_core::domain::{ModelId, ProviderId};
 use dagos_core::provider::{DeltaSink, InferenceProvider, InferenceRequest, ProviderError};
 use serde_json::Value;
 
 pub use prose::ProseExtractor;
-pub use protocol::{request_body, system_message, user_message};
+pub use protocol::{
+    jev_request_body, jev_system_message, request_body, system_message, user_message,
+};
 pub use sse::SseDecoder;
 
 /// Connection settings for one OpenAI-compatible endpoint.
@@ -82,6 +86,58 @@ fn excerpt(body: &str) -> &str {
     body.char_indices().nth(500).map_or(body, |(end, _)| &body[..end])
 }
 
+impl OpenAiCompatible {
+    /// Streams one Chat Completions request and returns the concatenated content, calling
+    /// `on_content` with each content fragment as it arrives.
+    async fn stream_completion(
+        &self,
+        body: Value,
+        mut on_content: impl FnMut(&str) + Send,
+    ) -> Result<String, String> {
+        let endpoint = self.endpoint();
+        let mut http = self
+            .client
+            .post(&endpoint)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .body(body.to_string());
+        if let Some(key) = &self.config.api_key {
+            http = http.bearer_auth(key);
+        }
+        let mut response =
+            http.send().await.map_err(|error| format!("request to {endpoint} failed: {error}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(format!("HTTP {status} from {endpoint}: {}", excerpt(&body)));
+        }
+
+        let mut events = SseDecoder::default();
+        let mut output = String::new();
+        'stream: while let Some(chunk) =
+            response.chunk().await.map_err(|error| format!("stream interrupted: {error}"))?
+        {
+            for data in events.push(&chunk) {
+                if data == "[DONE]" {
+                    break 'stream;
+                }
+                let event: Value = serde_json::from_str(&data)
+                    .map_err(|error| format!("unreadable stream event: {error}"))?;
+                if let Some(error) = event.get("error") {
+                    return Err(format!("endpoint reported an error: {error}"));
+                }
+                if let Some(content) =
+                    event.pointer("/choices/0/delta/content").and_then(Value::as_str)
+                {
+                    output.push_str(content);
+                    on_content(content);
+                }
+            }
+        }
+        Ok(output)
+    }
+}
+
 #[async_trait]
 impl InferenceProvider for OpenAiCompatible {
     fn id(&self) -> &ProviderId {
@@ -97,55 +153,46 @@ impl InferenceProvider for OpenAiCompatible {
         request: InferenceRequest<'_>,
         deltas: &mut dyn DeltaSink,
     ) -> Result<String, ProviderError> {
-        let endpoint = self.endpoint();
         let body = request_body(request.model_id, request.ir, self.config.json_mode);
-        let mut http = self
-            .client
-            .post(&endpoint)
-            .header("content-type", "application/json")
-            .header("accept", "text/event-stream")
-            .body(body.to_string());
-        if let Some(key) = &self.config.api_key {
-            http = http.bearer_auth(key);
-        }
-        let mut response = http
-            .send()
-            .await
-            .map_err(|error| failed(format!("request to {endpoint} failed: {error}")))?;
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(failed(format!("HTTP {status} from {endpoint}: {}", excerpt(&body))));
-        }
-
-        let mut events = SseDecoder::default();
         let mut prose = ProseExtractor::default();
-        let mut output = String::new();
-        'stream: while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|error| failed(format!("stream interrupted: {error}")))?
-        {
-            for data in events.push(&chunk) {
-                if data == "[DONE]" {
-                    break 'stream;
-                }
-                let event: Value = serde_json::from_str(&data)
-                    .map_err(|error| failed(format!("unreadable stream event: {error}")))?;
-                if let Some(error) = event.get("error") {
-                    return Err(failed(format!("endpoint reported an error: {error}")));
-                }
-                if let Some(content) =
-                    event.pointer("/choices/0/delta/content").and_then(Value::as_str)
-                {
-                    output.push_str(content);
-                    let text = prose.push(content);
-                    if !text.is_empty() {
-                        deltas.delta(&text);
-                    }
-                }
+        self.stream_completion(body, |content| {
+            let text = prose.push(content);
+            if !text.is_empty() {
+                deltas.delta(&text);
             }
-        }
-        Ok(output)
+        })
+        .await
+        .map_err(failed)
+    }
+}
+
+/// A Jev classifier backed by a model on an OpenAI-compatible endpoint (e.g. OpenRouter).
+///
+/// It sends the `kiss.jev-request.v1` document with classifier-only instructions and returns the
+/// model's raw text. It adds no authority of its own: DAGOS validates the output against
+/// `kiss.jev-context.v1` and the request, so anything beyond node labels is rejected.
+#[derive(Debug, Clone)]
+pub struct OpenAiCompatibleJev {
+    chat: OpenAiCompatible,
+    model: ModelId,
+    id: String,
+}
+
+impl OpenAiCompatibleJev {
+    pub fn new(chat: OpenAiCompatible, model: ModelId) -> Self {
+        let id = format!("{}-jev:{}", chat.config.id, model);
+        Self { chat, model, id }
+    }
+}
+
+#[async_trait]
+impl JevClassifier for OpenAiCompatibleJev {
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    async fn classify(&self, request: &JevRequest) -> Result<String, JevError> {
+        let body = jev_request_body(&self.model, request, self.chat.config.json_mode);
+        self.chat.stream_completion(body, |_| {}).await.map_err(JevError)
     }
 }
