@@ -14,7 +14,8 @@ dagos-mcp = { path = "../dagos-mcp" }
 dagos-openai = { path = "../dagos-openai" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
 
 [lints]
 workspace = true

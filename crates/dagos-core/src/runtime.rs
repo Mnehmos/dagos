@@ -10,7 +10,7 @@
 //! inspectable; a response's emissions, its `response.validated` event, and `run.completed` are
 //! committed together or not at all.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -41,6 +41,15 @@ pub enum RuntimeError {
     UnknownProvider(ProviderId),
     #[error(transparent)]
     Store(#[from] StoreError),
+}
+
+/// A run that [`Runtime::start`] recorded and [`Runtime::finish`] has yet to execute.
+#[derive(Debug)]
+pub struct StartedRun {
+    /// The run as recorded: `running`, with its provider, model, and system prompt.
+    pub run: Run,
+    task: NodeId,
+    message: String,
 }
 
 /// Wires the store, Jev, and the registered providers into the DAGOS pipeline.
@@ -122,12 +131,19 @@ impl Runtime {
         Ok(self.store.transaction(|tx| tx.set_run_defaults(project_id, config))?)
     }
 
-    /// Fails every run a previous process left `running` with error code `interrupted`. Call once
-    /// at startup, before starting runs.
+    /// Fails every run a previous process left `running` with error code `interrupted`. Call only
+    /// when this process is executing no runs, e.g. at startup.
     pub fn recover_interrupted_runs(&self) -> Result<Vec<Run>, StoreError> {
+        self.recover_runs_except(&BTreeSet::new())
+    }
+
+    /// Fails every `running` run except those this process is still `executing`, with error code
+    /// `interrupted`.
+    pub fn recover_runs_except(&self, executing: &BTreeSet<RunId>) -> Result<Vec<Run>, StoreError> {
         self.store.transaction(|tx| {
             tx.running_runs()?
                 .into_iter()
+                .filter(|run| !executing.contains(&run.id))
                 .map(|run| {
                     tx.fail_run(
                         &run.id,
@@ -147,11 +163,22 @@ impl Runtime {
         message: &str,
         config: &RunConfig,
     ) -> Result<Run, RuntimeError> {
-        let provider = self
-            .providers
-            .get(&config.provider_id)
-            .cloned()
-            .ok_or_else(|| RuntimeError::UnknownProvider(config.provider_id.clone()))?;
+        let started = self.start(project_id, message, config)?;
+        self.finish(started).await
+    }
+
+    /// Starts a run: records it, records `message` as its task node, and carries context. The
+    /// returned run is `running`; [`Runtime::finish`] executes the rest of the pipeline. Splitting
+    /// the two lets a caller learn the run ID before inference begins.
+    pub fn start(
+        &self,
+        project_id: &ProjectId,
+        message: &str,
+        config: &RunConfig,
+    ) -> Result<StartedRun, RuntimeError> {
+        if !self.providers.contains_key(&config.provider_id) {
+            return Err(RuntimeError::UnknownProvider(config.provider_id.clone()));
+        }
         let (run, task) = self.store.transaction(|tx| {
             let run = tx.create_run(project_id, config)?;
             let turn = ConversationTurn::user(message).to_payload();
@@ -163,8 +190,20 @@ impl Runtime {
             carry_context(tx, &run.id)?;
             Ok::<_, StoreError>((run, task.id))
         })?;
+        Ok(StartedRun { run, task, message: message.to_owned() })
+    }
 
-        match self.execute(&run, &task, message, provider.as_ref()).await {
+    /// Executes the rest of a started run's pipeline and returns the finished run.
+    pub async fn finish(&self, started: StartedRun) -> Result<Run, RuntimeError> {
+        let StartedRun { run, task, message } = started;
+        let outcome = match self.providers.get(&run.provider_id).cloned() {
+            Some(provider) => self.execute(&run, &task, &message, provider.as_ref()).await,
+            None => Err(StageFailure::new(
+                ErrorCode::ProviderFailed,
+                format!("provider `{}` is not registered", run.provider_id),
+            )),
+        };
+        match outcome {
             Ok(completed) => Ok(completed),
             Err(failure) => Ok(self.store.transaction(|tx| {
                 if let Some(evidence) = failure.evidence {

@@ -206,7 +206,8 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Serve { address } => {
-            let workspace = Workspace::open(&cli.dir, None, timeout)?
+            let hub = server::EventHub::new();
+            let workspace = Workspace::open(&cli.dir, Some(hub.listener()), timeout)?
                 .with_mcp_capabilities(&cli.dir, |warning| eprintln!("warning: {warning}"))
                 .await?;
             let workspace = Arc::new(workspace);
@@ -215,8 +216,8 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
                 .map_err(|error| format!("cannot listen on {address}: {error}"))?;
             let bound = listener.local_addr().map_err(|e| e.to_string())?;
             let name = &workspace.project.name;
-            eprintln!("DAGOS inspector API for `{name}` on http://{bound}/api/overview");
-            server::serve(listener, workspace).await.map_err(|e| e.to_string())?;
+            eprintln!("DAGOS inspector for `{name}` on http://{bound}/");
+            server::serve(listener, workspace, hub).await.map_err(|e| e.to_string())?;
             Ok(ExitCode::SUCCESS)
         }
     }

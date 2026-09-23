@@ -106,7 +106,7 @@ async fn the_http_api_serves_the_same_views_on_loopback() {
     let (_root, workspace) = workspace_with_history().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(server::serve(listener, Arc::new(workspace)));
+    tokio::spawn(server::serve(listener, Arc::new(workspace), server::EventHub::new()));
     let get = |path: &str| {
         let url = format!("{base}{path}");
         async move {

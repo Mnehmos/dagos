@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>DAGOS</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2l10 10-10 10L2 12z' fill='%234f46e5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/js/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#inspector">Skip to the run inspector</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path class="logo-edges" d="M6.2 7.6 11 16.4M17.8 7.6 13 16.4M7.8 6h8.4"></path>
+        <circle cx="5" cy="6" r="2.6"></circle>
+        <circle cx="19" cy="6" r="2.6"></circle>
+        <circle cx="12" cy="18" r="2.6"></circle>
+      </svg>
+      <span class="wordmark">DAGOS</span>
+      <span class="divider" aria-hidden="true">/</span>
+      <span id="project-name" class="project-name">…</span>
+    </div>
+    <p class="tagline">DAG is durable state · active context is a temporary projection · IR is the provider boundary</p>
+    <div class="topbar-actions">
+      <span id="connection" class="connection" data-state="connecting" role="status" aria-live="polite">Connecting…</span>
+      <button id="theme-toggle" type="button" class="icon-button" aria-label="Change theme">◐</button>
+      <button id="help-toggle" type="button" class="icon-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <main class="layout">
+    <aside class="sidebar" aria-label="Runs">
+      <form id="composer" class="composer">
+        <label for="message" class="section-label">New run</label>
+        <textarea id="message" rows="3" placeholder="Ask something…" aria-describedby="composer-hint"></textarea>
+        <div class="composer-row">
+          <button id="config-toggle" type="button" class="config-chip" aria-expanded="false" aria-controls="config-panel" title="Provider, model, and system prompt (c)">
+            <span class="chip-caption">runs with</span>
+            <span id="config-provider-chip">…</span><span class="chip-sep" aria-hidden="true">/</span><span id="config-model-chip">…</span>
+          </button>
+          <button id="send" type="submit" class="primary">Run</button>
+        </div>
+        <p id="composer-hint" class="hint">Enter runs · Shift+Enter adds a line</p>
+      </form>
+
+      <section id="config-panel" class="config-panel" aria-label="Run configuration" hidden>
+        <form id="config-form">
+          <label for="config-provider">Provider</label>
+          <select id="config-provider"></select>
+          <label for="config-model">Model</label>
+          <input id="config-model" list="config-models" autocomplete="off" spellcheck="false" required>
+          <datalist id="config-models"></datalist>
+          <label for="config-prompt">System prompt</label>
+          <textarea id="config-prompt" rows="7"></textarea>
+          <p class="hint">Applies to subsequent runs. Every run records the configuration it used, and changing provider or model never changes DAG semantics.</p>
+          <div class="button-row">
+            <button id="config-cancel" type="button">Cancel</button>
+            <button type="submit" class="primary">Save</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="runs" aria-labelledby="runs-heading">
+        <h2 id="runs-heading" class="section-label">Runs</h2>
+        <ol id="run-list" class="run-list"><li class="empty-note">Loading…</li></ol>
+      </section>
+
+      <footer id="status" class="status"></footer>
+    </aside>
+
+    <section id="inspector" class="inspector" aria-label="Run inspector" tabindex="-1"></section>
+
+    <aside id="dag" class="dag-panel" aria-label="Durable DAG"></aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="help" class="help" aria-labelledby="help-title">
+    <h2 id="help-title">Keyboard</h2>
+    <dl class="shortcuts">
+      <div><dt><kbd>/</kbd> <kbd>n</kbd></dt><dd>Write a message</dd></div>
+      <div><dt><kbd>Enter</kbd></dt><dd>Start the run</dd></div>
+      <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next or previous run</dd></div>
+      <div><dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Conversation, Context, Jev, IR, Response, Events</dd></div>
+      <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Move between tabs</dd></div>
+      <div><dt><kbd>c</kbd></dt><dd>Provider, model, system prompt</dd></div>
+      <div><dt><kbd>t</kbd></dt><dd>Theme: system, light, dark</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close panels</dd></div>
+    </dl>
+    <form method="dialog"><button id="help-close" type="submit" class="primary">Close</button></form>
+  </dialog>
+</body>
+</html>
