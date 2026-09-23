@@ -158,6 +158,7 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("js/view.js", "text/javascript; charset=utf-8", include_str!("../ui/js/view.js")),
     ("js/settings.js", "text/javascript; charset=utf-8", include_str!("../ui/js/settings.js")),
     ("js/chat.js", "text/javascript; charset=utf-8", include_str!("../ui/js/chat.js")),
+    ("js/markdown.js", "text/javascript; charset=utf-8", include_str!("../ui/js/markdown.js")),
 ];
 
 fn asset_response(path: &str) -> Response {

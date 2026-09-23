@@ -24,7 +24,7 @@ test("markdown escapes everything it does not render", () => {
 
 test("markdown renders fences, headings, lists, and paragraphs", () => {
   const html = markdownHtml(["# Plan", "", "- one", "- **two**", "", "1. first", "", "```rust", 'fn x() { "<" }', "```", "", "done"].join("\n"));
-  assert.ok(html.includes("<h4>Plan</h4>"));
+  assert.ok(html.includes("<h3>Plan</h3>"));
   assert.ok(html.includes("<ul><li>one</li><li><strong>two</strong></li></ul>"));
   assert.ok(html.includes("<ol><li>first</li></ol>"));
   assert.ok(html.includes('<pre class="code" data-lang="rust"><code>fn x() { &quot;&lt;&quot; }</code></pre>'));

@@ -207,13 +207,17 @@ function scrollToBottom() {
 
 function renderChat({ forceScroll = false } = {}) {
   const pinned = forceScroll || isPinned();
-  const opened = [...$("thread").querySelectorAll("[data-card] > details[open]")].map((details) => details.parentElement.dataset.card);
+  const disclosure = (card) => (card.tagName === "DETAILS" ? card : card.querySelector(":scope > details"));
+  const opened = [...$("thread").querySelectorAll("[data-card]")]
+    .filter((card) => disclosure(card)?.open)
+    .map((card) => card.dataset.card);
   $("chat-header").innerHTML = chat.chatHeaderHtml(state.conversation?.conversation, { renaming: state.renaming });
   $("thread").innerHTML = state.conversation?.turns.length
     ? chat.threadHtml(state.conversation, { live: state.live })
     : chat.newChatHtml(state.overview);
   for (const card of opened) {
-    const details = $("thread").querySelector(`[data-card="${CSS.escape(card)}"] > details`);
+    const element = $("thread").querySelector(`[data-card="${CSS.escape(card)}"]`);
+    const details = element && disclosure(element);
     if (details) details.open = true;
   }
   if (pinned) scrollToBottom();

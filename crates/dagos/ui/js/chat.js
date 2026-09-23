@@ -2,82 +2,10 @@
 // Pure functions (view models in, escaped HTML out), tested under Node like view.js. Every turn is
 // still a full DAGOS run; the chat only presents runs in order.
 
+import { markdownHtml } from "./markdown.js";
 import { esc, jsonHtml } from "./view.js";
 
-// ---------------------------------------------------------------------------------------------
-// Markdown: fenced code, inline code, bold, headings, lists, paragraphs, and http(s) links.
-// Everything is escaped first, so model output can never inject markup.
-
-function inlineHtml(text) {
-  return String(text)
-    .split(/(`[^`\n]+`)/)
-    .map((part) => {
-      if (part.length > 2 && part.startsWith("`") && part.endsWith("`")) {
-        return `<code>${esc(part.slice(1, -1))}</code>`;
-      }
-      return esc(part)
-        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
-        .replace(
-          /\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g,
-          (_, label, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${label}</a>`,
-        );
-    })
-    .join("");
-}
-
-/** Renders a reply's markdown subset as HTML. */
-export function markdownHtml(text) {
-  const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
-  const out = [];
-  let paragraph = [];
-  let list = null;
-  const flushParagraph = () => {
-    if (paragraph.length) out.push(`<p>${paragraph.map(inlineHtml).join("<br>")}</p>`);
-    paragraph = [];
-  };
-  const flushList = () => {
-    if (list) out.push(`<${list.tag}>${list.items.map((item) => `<li>${inlineHtml(item)}</li>`).join("")}</${list.tag}>`);
-    list = null;
-  };
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const fence = line.match(/^\s*```\s*([\w+-]*)\s*$/);
-    if (fence) {
-      flushParagraph();
-      flushList();
-      const code = [];
-      for (index += 1; index < lines.length && !/^\s*```\s*$/.test(lines[index]); index += 1) code.push(lines[index]);
-      const language = fence[1] ? ` data-lang="${esc(fence[1])}"` : "";
-      out.push(`<pre class="code"${language}><code>${esc(code.join("\n"))}</code></pre>`);
-      continue;
-    }
-    const heading = line.match(/^(#{1,4})\s+(.*)$/);
-    const bullet = line.match(/^\s*[-*]\s+(.*)$/);
-    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (heading) {
-      flushParagraph();
-      flushList();
-      out.push(`<h4>${inlineHtml(heading[2])}</h4>`);
-    } else if (bullet || numbered) {
-      flushParagraph();
-      const tag = bullet ? "ul" : "ol";
-      if (list?.tag !== tag) {
-        flushList();
-        list = { tag, items: [] };
-      }
-      list.items.push((bullet ?? numbered)[1]);
-    } else if (!line.trim()) {
-      flushParagraph();
-      flushList();
-    } else {
-      flushList();
-      paragraph.push(line);
-    }
-  }
-  flushParagraph();
-  flushList();
-  return out.join("");
-}
+export { markdownHtml };
 
 // ---------------------------------------------------------------------------------------------
 // Time
@@ -181,7 +109,6 @@ function failureNoteHtml(turn) {
   return `<div class="chat-failure" role="alert"><strong>${esc(stage ?? "The run failed")}</strong> <code>${esc(failure.error_code)}</code><p>${esc(why)}</p><p class="hint">Nothing from it entered the DAG.</p></div>`;
 }
 
-/** One turn: the user's message, then the reply (streaming, rendered, or failed). */
 const TOOL_STATUS = {
   awaiting: "waiting",
   running: "running…",
@@ -196,8 +123,21 @@ export function toolOutputText(output) {
   if (typeof output.error === "string") return output.error;
   const parts = Array.isArray(output.content) ? output.content : [];
   const texts = parts.map((part) => (part.type === "text" ? part.text : part.note ?? `[${part.type}${part.uri ? ` ${part.uri}` : ""}]`));
-  if (texts.length) return texts.join("\n");
+  if (texts.length) return texts.join("\n\n");
   return JSON.stringify(output.structured ?? output, null, 2);
+}
+
+/** A tool call's output as HTML: text parts as markdown (without a leading heading that only
+ * repeats the tool's name), structured-only output as JSON. */
+export function toolOutputHtml(call) {
+  const output = call.output;
+  if (output == null) return "";
+  const hasText = typeof output.error === "string" || (Array.isArray(output.content) && output.content.length);
+  if (!hasText) return `<pre class="json">${jsonHtml(output.structured ?? output)}</pre>`;
+  const tool = call.name.split(".").pop();
+  const lines = toolOutputText(output).split("\n");
+  if (/^#{1,6}\s/.test(lines[0] ?? "") && lines[0].includes(tool)) lines.shift();
+  return `<div class="md tool-md">${markdownHtml(lines.join("\n"))}</div>`;
 }
 
 /** One tool call in a turn; calls waiting for a person get Allow / Deny buttons. */
@@ -205,7 +145,7 @@ export function toolCardHtml(call, runId) {
   const pending = call.pending && call.status === "awaiting";
   const status = pending ? "needs approval" : TOOL_STATUS[call.status] ?? call.status;
   const hasArguments = call.arguments && Object.keys(call.arguments).length;
-  const output = toolOutputText(call.output);
+  const output = toolOutputHtml(call);
   const approval = pending
     ? `<div class="approval" role="group" aria-label="Approve ${esc(call.name)}">
         <span>Run <code>${esc(call.name)}</code>?</span>
@@ -220,11 +160,31 @@ export function toolCardHtml(call, runId) {
       <div class="tool-body">
         ${hasArguments ? `<p class="section-label">Arguments</p><pre class="json">${jsonHtml(call.arguments)}</pre>` : `<p class="hint">No arguments.</p>`}
         ${call.reason ? `<p class="tool-reason">${esc(call.reason)}</p>` : ""}
-        ${output ? `<p class="section-label">${call.status === "failed" ? "Error" : "Result"}</p><pre class="tool-output">${esc(output)}</pre>` : ""}
+        ${output ? `<p class="section-label">${call.status === "failed" ? "Error" : "Result"}</p>${output}` : ""}
       </div>
     </details>
     ${approval}
   </div>`;
+}
+
+/** Consecutive tool calls: shown as they are when there are few, otherwise folded into one group
+ * that opens by itself while a call waits for a person. */
+export function toolGroupHtml(calls, runId) {
+  const cards = calls.map((call) => toolCardHtml(call, runId)).join("");
+  if (calls.length < 3) return cards;
+  const counts = {};
+  for (const call of calls) counts[call.status] = (counts[call.status] ?? 0) + 1;
+  const summary = ["completed", "failed", "denied", "running", "awaiting"]
+    .filter((status) => counts[status])
+    .map((status) => `<span class="group-${status}">${counts[status]} ${TOOL_STATUS[status]}</span>`)
+    .join(" · ");
+  const open = calls.some((call) => call.pending || call.status === "running");
+  const names = [...new Set(calls.map((call) => call.name.split(".").pop()))];
+  const shown = names.slice(0, 4).map((name) => `<code>${esc(name)}</code>`).join(", ");
+  return `<details class="tool-group" data-card="${esc(`${runId}:group:${calls[0].call_id}`)}"${open ? " open" : ""}>
+    <summary><span class="tool-icon" aria-hidden="true">⚙</span><strong>${calls.length} tool calls</strong><span class="group-names">${shown}${names.length > 4 ? ` +${names.length - 4} more` : ""}</span><span class="group-summary">${summary}</span></summary>
+    <div class="tool-group-body">${cards}</div>
+  </details>`;
 }
 
 /** One turn: the user's message, then each reply and tool call in order (streaming, rendered, or failed). */
@@ -232,11 +192,17 @@ export function turnHtml(turn, { live = null } = {}) {
   const run = turn.run;
   const running = run.status === "running";
   const items = turn.items ?? (turn.prose ? [{ kind: "prose", text: turn.prose }] : []);
-  const steps = items.map((item) =>
-    item.kind === "tool"
-      ? toolCardHtml(item, run.id)
-      : `<div class="bubble assistant"><div class="md">${markdownHtml(item.text)}</div></div>`,
-  );
+  const steps = [];
+  for (let index = 0; index < items.length; ) {
+    if (items[index].kind !== "tool") {
+      steps.push(`<div class="bubble assistant"><div class="md">${markdownHtml(items[index].text)}</div></div>`);
+      index += 1;
+      continue;
+    }
+    const calls = [];
+    while (index < items.length && items[index].kind === "tool") calls.push(items[index++]);
+    steps.push(toolGroupHtml(calls, run.id));
+  }
   if (running) {
     const streamed = live && live.length > (turn.streaming ?? "").length ? live : turn.streaming ?? "";
     const waiting = items.some((item) => item.kind === "tool" && item.pending);

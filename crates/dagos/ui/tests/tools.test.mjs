@@ -32,7 +32,7 @@ test("only calls waiting for a person get approval buttons", () => {
 });
 
 test("tool output reads as text, errors, notes, or JSON", () => {
-  assert.equal(toolOutputText({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }), "a\nb");
+  assert.equal(toolOutputText({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }), ["a", "b"].join(String.fromCharCode(10, 10)), "parts are separate blocks");
   assert.equal(toolOutputText({ error: "server crashed" }), "server crashed");
   assert.equal(toolOutputText({ content: [{ type: "image", note: "image data is not passed to models" }] }), "image data is not passed to models");
   assert.equal(toolOutputText({ content: [], structured: { ok: true } }), '{\n  "ok": true\n}');
