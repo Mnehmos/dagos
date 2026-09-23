@@ -270,8 +270,17 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
             let workspace = Workspace::open(&cli.dir, Some(hub.listener()), timeout)?;
             // The app can ask a person to approve tool calls.
             workspace.approvals().set_interactive(true);
-            workspace.start_tools(|warning| eprintln!("warning: {warning}")).await?;
             let workspace = Arc::new(workspace);
+            // MCP servers start in the background: the app is usable at once, and runs get the
+            // tools as soon as they are ready.
+            let tools = workspace.clone();
+            tokio::spawn(async move {
+                if let Err(error) =
+                    tools.start_tools(|warning| eprintln!("warning: {warning}")).await
+                {
+                    eprintln!("warning: MCP tools are unavailable: {error}");
+                }
+            });
             let listener = tokio::net::TcpListener::bind(&address)
                 .await
                 .map_err(|error| format!("cannot listen on {address}: {error}"))?;

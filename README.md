@@ -114,18 +114,29 @@ The model's classification is applied as the context; it can never write to the 
 choose providers. Each run's `jev.requested` event records which classifier was asked, e.g.
 `openrouter-jev:<model>`, and the inspector's Jev tab shows who classified and why.
 
-### MCP (optional)
+### Tools: MCP servers (optional)
 
-DAGOS never needs MCP. To describe MCP tools to models, list stdio servers in `.dagos/mcp.json`:
+DAGOS works without tools. With them, a model can act: read files, run commands, drive a browser.
+Tools come from MCP servers (stdio). Add one in the app under **⚙ → Tools → + Add MCP server**,
+or import the servers Claude Desktop already has (only command, arguments, and working directory
+are copied; environment values never are). They are stored in `.dagos/mcp.json`:
 
 ```json
-{"servers": [{"id": "files", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]}]}
+{"servers": [{"id": "ooda", "command": "node", "args": ["C:/tools/ooda/dist/index.js"],
+              "cwd": "C:/tools/ooda", "policy": "off", "tools": {"read_file": "ask", "exec_cli": "ask"}}]}
 ```
 
-(On Windows use `npx.cmd`.) `dagos run` and `dagos serve` ask each server for its tools and compile
-them into the IR's `tools` as `<id>.<tool>` descriptions. They are descriptive only: DAGOS v0.1
-records requested `tool_calls` but never executes them. A server that is missing, crashes, hangs, or
-misbehaves is reported as a warning and skipped, and the run proceeds without its tools.
+Every tool has a policy: **Off** (not offered to models), **Ask** (the default: the chat shows
+Allow once / Always allow / Deny before the call runs, and an unanswered call is denied after 10
+minutes), or **Allow** (runs without asking). Offer only what you need: each offered tool's
+description and schema go into every request.
+
+A run executes tools like this: a validated response lists `tool_calls`; DAGOS records each call
+(`tool.requested`), decides by policy or by asking you (`tool.decided`), runs permitted calls on the
+server (`tool.completed`), and sends the results back through the next IR's `tool_results`, up to 8
+rounds per run. Tool output never becomes DAG state by itself; images are not passed to models and
+long text is cut. `dagos run` (no app to ask in) runs only `allow` tools. A server that is missing,
+crashes, hangs, or misbehaves is reported and skipped, and runs proceed without its tools.
 
 ## Layout
 

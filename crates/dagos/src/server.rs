@@ -32,7 +32,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::approvals::Answer;
-use crate::inspect::{self, ConversationView, Overview, RunDetail};
+use crate::inspect::{self, ConversationView, Overview, RunDetail, TurnItem};
 use crate::keys::KeyStore;
 use crate::providers::{
     self, JevEntry, Origin, ProviderEntry, ProviderKind, ProviderSetting, Settings,
@@ -101,6 +101,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/conversations/{conversation}", get(conversation).patch(update_conversation))
         .route("/api/runs/{run}/tools/{call}", post(answer_tool_call))
         .route("/api/tools", get(tools))
+        .route("/api/tools/import", get(import_candidates))
         .route("/api/tools/servers/{id}", put(save_tool_server).delete(remove_tool_server))
         .route("/api/tools/servers/{id}/policy", put(set_tool_policy))
         .route("/api/settings", get(settings))
@@ -224,7 +225,11 @@ async fn run(
         Err(_) => inspect::resolve_run(&workspace.store, &workspace.project.id, &reference)?
             .ok_or_else(not_found)?,
     };
-    Ok(Json(inspect::run_detail(&workspace.store, &id)?.ok_or_else(not_found)?))
+    let mut detail = inspect::run_detail(&workspace.store, &id)?.ok_or_else(not_found)?;
+    for call in &mut detail.tool_calls {
+        call.pending = workspace.approvals().is_pending(&id, &call.call_id);
+    }
+    Ok(Json(detail))
 }
 
 /// `POST /api/runs`: the message, plus optional one-off overrides of the run defaults.
@@ -401,9 +406,17 @@ async fn conversation(
     Path(id): Path<String>,
 ) -> Result<Json<ConversationView>, ApiError> {
     let id = ConversationId::parse(id).map_err(ApiError::bad_request)?;
-    inspect::conversation(&state.workspace.store, &id)?
-        .map(Json)
-        .ok_or_else(|| ApiError::NotFound(format!("conversation `{id}` not found")))
+    let mut view = inspect::conversation(&state.workspace.store, &id)?
+        .ok_or_else(|| ApiError::NotFound(format!("conversation `{id}` not found")))?;
+    let approvals = state.workspace.approvals();
+    for turn in &mut view.turns {
+        for item in &mut turn.items {
+            if let TurnItem::Tool(call) = item {
+                call.pending = approvals.is_pending(&turn.run.id, &call.call_id);
+            }
+        }
+    }
+    Ok(Json(view))
 }
 
 #[derive(Deserialize)]
@@ -671,6 +684,74 @@ async fn tools(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Va
     tools_view(&state.workspace)
 }
 
+/// Claude Desktop's configuration file for this user, if the platform has one.
+fn claude_desktop_config() -> Option<PathBuf> {
+    let var = |name| std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from);
+    let path = if cfg!(windows) {
+        var("APPDATA")?.join("Claude")
+    } else if cfg!(target_os = "macos") {
+        var("HOME")?.join("Library/Application Support/Claude")
+    } else {
+        var("XDG_CONFIG_HOME")
+            .or_else(|| var("HOME").map(|home| home.join(".config")))?
+            .join("Claude")
+    };
+    Some(path.join("claude_desktop_config.json"))
+}
+
+/// MCP servers another app already configures, offered for import: id, command, args, and
+/// working directory only. Environment values are never read or copied (they often hold keys);
+/// servers that rely on them are flagged.
+fn import_candidates_from(
+    path: &std::path::Path,
+    existing: &[McpServer],
+) -> Vec<serde_json::Value> {
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&text) else { return Vec::new() };
+    let Some(servers) = config.get("mcpServers").and_then(serde_json::Value::as_object) else {
+        return Vec::new();
+    };
+    servers
+        .iter()
+        .filter_map(|(name, server)| {
+            let command = server.get("command")?.as_str()?.to_owned();
+            let id: String = name
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+                .collect();
+            let args: Vec<String> = server
+                .get("args")
+                .and_then(serde_json::Value::as_array)
+                .map(|args| args.iter().filter_map(|arg| arg.as_str().map(str::to_owned)).collect())
+                .unwrap_or_default();
+            let needs_env = server
+                .get("env")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|env| !env.is_empty());
+            Some(json!({
+                "id": id,
+                "name": name,
+                "command": command,
+                "args": args,
+                "cwd": server.get("cwd").and_then(serde_json::Value::as_str),
+                "needs_env": needs_env,
+                "added": existing.iter().any(|existing| existing.id == id),
+            }))
+        })
+        .collect()
+}
+
+/// `GET /api/tools/import`: MCP servers configured in Claude Desktop, for one-click import.
+async fn import_candidates(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let existing = state.workspace.mcp_config().map_err(ApiError::Internal)?.servers;
+    let source = claude_desktop_config();
+    let candidates =
+        source.as_deref().map(|path| import_candidates_from(path, &existing)).unwrap_or_default();
+    Ok(Json(json!({"source": source, "servers": candidates})))
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ToolServerRequest {
@@ -844,7 +925,39 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::hostname;
+    use super::{McpServer, hostname, import_candidates_from};
+
+    #[test]
+    fn claude_desktop_servers_import_without_their_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("claude_desktop_config.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers": {
+                "ooda-computer": {"command": "node", "args": ["C:/OODA/dist/index.js"], "cwd": "C:/OODA"},
+                "github": {"command": "npx", "args": ["-y", "gh-mcp"], "env": {"GITHUB_TOKEN": "secret-token"}},
+                "broken": {"args": []}
+            }}"#,
+        )
+        .unwrap();
+        let existing = [McpServer::new("github", "npx", vec![])];
+        let candidates = import_candidates_from(&path, &existing);
+        assert_eq!(candidates.len(), 2, "entries without a command are skipped");
+        let ooda = candidates.iter().find(|c| c["name"] == "ooda-computer").unwrap();
+        assert_eq!(ooda["id"], "ooda-computer");
+        assert_eq!(ooda["cwd"], "C:/OODA");
+        assert_eq!(
+            (ooda["needs_env"].as_bool(), ooda["added"].as_bool()),
+            (Some(false), Some(false))
+        );
+        let github = candidates.iter().find(|c| c["name"] == "github").unwrap();
+        assert_eq!(
+            (github["needs_env"].as_bool(), github["added"].as_bool()),
+            (Some(true), Some(true))
+        );
+        assert!(!serde_json::to_string(&candidates).unwrap().contains("secret-token"));
+        assert!(import_candidates_from(&dir.path().join("missing.json"), &[]).is_empty());
+    }
 
     #[test]
     fn host_names_are_extracted_from_host_headers() {

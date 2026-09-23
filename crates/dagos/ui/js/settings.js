@@ -218,6 +218,123 @@ export function newEndpointHtml() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Tools (MCP servers)
+
+const POLICIES = [
+  { value: "off", label: "Off", hint: "Not offered to models" },
+  { value: "ask", label: "Ask", hint: "You approve each call in the chat" },
+  { value: "allow", label: "Allow", hint: "Runs without asking" },
+];
+
+/** A server's status pill: off, error, or how many of its tools models are offered. */
+export function toolServerStatus(status) {
+  if (!status || status.enabled === false) return { kind: "keyless", text: "Off" };
+  if (status.error) return { kind: "needs-key", text: "Error" };
+  const offered = status.tools.filter((tool) => tool.policy !== "off").length;
+  return { kind: "ready", text: `${offered}/${status.tools.length} tools` };
+}
+
+/** The Tools part of the settings navigation. */
+export function toolsNavHtml(tools, selected) {
+  const servers = tools?.config?.servers ?? [];
+  const statuses = tools?.capabilities?.servers ?? [];
+  const items = servers
+    .map((server) => {
+      const key = `tool:${server.id}`;
+      const status = toolServerStatus(statuses.find((candidate) => candidate.id === server.id) ?? { enabled: server.enabled !== false, tools: [], error: "not started" });
+      return `<li><button type="button" class="settings-nav-item${selected === key ? " selected" : ""}" data-settings-select="${esc(key)}" aria-current="${selected === key}">
+        <span class="settings-nav-name">${esc(server.id)}</span>
+        <span class="status-pill status-${status.kind}">${esc(status.text)}</span>
+      </button></li>`;
+    })
+    .join("");
+  return `<p class="section-label">Tools</p>
+    ${items ? `<ul class="settings-nav-list">${items}</ul>` : ""}
+    <button type="button" class="settings-nav-add${selected === "tool:new" ? " selected" : ""}" data-settings-select="tool:new">+ Add MCP server</button>`;
+}
+
+function policyControlHtml(serverId, tool, current) {
+  return `<span class="policy-control" role="group" aria-label="${esc(tool ?? "all tools")} policy">${POLICIES.map(
+    (policy) => `<button type="button" class="policy-${policy.value}" data-settings-action="tool-policy" data-server="${esc(serverId)}"${tool ? ` data-tool="${esc(tool)}"` : ""} data-policy="${policy.value}" aria-pressed="${current === policy.value}" title="${esc(policy.hint)}">${policy.label}</button>`,
+  ).join("")}</span>`;
+}
+
+function serverFormHtml(server) {
+  const creating = !server;
+  return `<form class="settings-block tool-server-form" data-settings-form="tool-server"${creating ? "" : ` data-server="${esc(server.id)}"`}>
+      <h4>${creating ? "Stdio MCP server" : "Server"}</h4>
+      ${creating ? `<label for="tool-id">ID</label><input id="tool-id" name="id" required pattern="[A-Za-z0-9_\-]+" placeholder="e.g. ooda" autocomplete="off" spellcheck="false"><p class="hint">Tools appear to models as <code>&lt;id&gt;.&lt;tool&gt;</code>.</p>` : ""}
+      <label for="tool-command">Command</label>
+      <input id="tool-command" name="command" required value="${esc(server?.command ?? "")}" placeholder="node, npx.cmd, uvx, python…" autocomplete="off" spellcheck="false">
+      <label for="tool-args">Arguments <span class="optional">one per line</span></label>
+      <textarea id="tool-args" name="args" rows="3" spellcheck="false">${esc((server?.args ?? []).join("\n"))}</textarea>
+      <label for="tool-cwd">Working directory <span class="optional">optional</span></label>
+      <input id="tool-cwd" name="cwd" value="${esc(server?.cwd ?? "")}" autocomplete="off" spellcheck="false">
+      <label class="check"><input type="checkbox" name="enabled" ${server?.enabled === false ? "" : "checked"}> Enabled (started with DAGOS)</label>
+      <div class="button-row start">
+        <button type="submit" class="primary">${creating ? "Add and start" : "Save and restart"}</button>
+        ${creating ? "" : `<button type="button" class="danger" data-settings-action="remove-tool-server" data-server="${esc(server.id)}">Remove server</button>`}
+      </div>
+    </form>`;
+}
+
+/** The pane for one MCP server: status, bulk and per-tool policies, and its launch settings. */
+export function toolServerHtml(server, status, { filter = "" } = {}) {
+  const pill = toolServerStatus(status ?? { enabled: server.enabled !== false, tools: [], error: "not started" });
+  const tools = status?.tools ?? [];
+  const offered = tools.filter((tool) => tool.policy !== "off").length;
+  const needle = filter.trim().toLowerCase();
+  const rows = tools
+    .map((tool) => {
+      const hidden = needle && !`${tool.name} ${tool.description}`.toLowerCase().includes(needle);
+      return `<tr data-tool-row="${esc(`${tool.name} ${tool.description}`.toLowerCase())}"${hidden ? " hidden" : ""}>
+        <td class="grow"><code>${esc(tool.name)}</code><div class="tool-description">${esc(tool.description)}</div></td>
+        <td>${policyControlHtml(server.id, tool.name, tool.policy)}</td>
+      </tr>`;
+    })
+    .join("");
+  const body = status?.error
+    ? `<p class="callout callout-error">${esc(status.error)}</p><p class="hint">Check the command and working directory below, then save to restart it.</p>`
+    : server.enabled === false
+      ? `<p class="callout">This server is disabled: it is not started and models see none of its tools.</p>`
+      : tools.length
+        ? `<div class="settings-block">
+            <h4>Tools <span class="optional">${offered} of ${tools.length} offered to models</span></h4>
+            <p class="hint">Every offered tool's description and schema go into each request, so offer only what you need. <strong>Ask</strong> shows Allow / Deny in the chat before a call runs; <strong>Allow</strong> runs it without asking.</p>
+            <div class="bulk-row"><span>Set all:</span>${policyControlHtml(server.id, null, null)}
+              <input class="tool-filter" type="search" placeholder="Filter ${tools.length} tools" value="${esc(filter)}" aria-label="Filter tools" data-settings-filter></div>
+            <table class="grid tool-table"><tbody>${rows}</tbody></table>
+          </div>`
+        : `<p class="empty-note">The server describes no tools.</p>`;
+  return `<header class="settings-head"><h3>${esc(server.id)}</h3><span class="status-pill status-${pill.kind}">${esc(pill.text)}</span></header>
+    <dl class="facts compact"><div><dt>Command</dt><dd><code>${esc([server.command, ...(server.args ?? [])].join(" "))}</code></dd></div>${server.cwd ? `<div><dt>In</dt><dd><code>${esc(server.cwd)}</code></dd></div>` : ""}</dl>
+    ${body}
+    ${serverFormHtml(server)}`;
+}
+
+/** The pane for adding a server: import from Claude Desktop, or enter it by hand. */
+export function newToolServerHtml(imports) {
+  const candidates = imports?.servers ?? [];
+  const list = candidates
+    .map(
+      (candidate, index) => `<li class="import-item">
+        <div><strong>${esc(candidate.name)}</strong> <code>${esc([candidate.command, ...candidate.args].join(" "))}</code>
+          ${candidate.needs_env ? `<p class="hint">Uses environment variables in Claude Desktop, which DAGOS does not copy; set them before starting DAGOS.</p>` : ""}</div>
+        ${candidate.added ? `<span class="status-pill status-ready">Added</span>` : `<button type="button" data-settings-action="import-tool-server" data-index="${index}">Import</button>`}
+      </li>`,
+    )
+    .join("");
+  return `<header class="settings-head"><h3>Add MCP server</h3></header>
+    <p class="callout">MCP servers give models tools. DAGOS starts each server, offers its tools to models, and runs a call only when the tool's policy allows it or you approve it. New tools start as <strong>Ask</strong>.</p>
+    ${
+      candidates.length
+        ? `<div class="settings-block"><h4>From Claude Desktop</h4><ul class="import-list">${list}</ul><p class="hint">Only the command, arguments, and working directory are imported.</p></div>`
+        : ""
+    }
+    ${serverFormHtml(null)}`;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Controller
 
 const ui = {
@@ -229,6 +346,9 @@ const ui = {
   onChange: () => {},
   notify: () => {},
   saveDefaults: (body) => api.saveConfig(body),
+  tools: null,
+  imports: null,
+  toolFilter: "",
 };
 
 const $ = (id) => document.getElementById(id);
@@ -244,12 +364,21 @@ function render() {
     $("settings-detail").innerHTML = `<p class="loading">Loading…</p>`;
     return;
   }
-  if (!ui.selected || (ui.selected !== "jev" && ui.selected !== "new" && !settings.providers.some((p) => p.id === ui.selected))) {
+  const toolServer = ui.selected?.startsWith("tool:") ? ui.selected.slice(5) : null;
+  const knownTool = toolServer === "new" || (ui.tools?.config.servers ?? []).some((server) => server.id === toolServer);
+  if (toolServer && !knownTool && ui.tools) ui.selected = "tool:new";
+  if (!ui.selected || (!ui.selected.startsWith("tool:") && ui.selected !== "jev" && ui.selected !== "new" && !settings.providers.some((p) => p.id === ui.selected))) {
     ui.selected = settings.providers.find((p) => p.origin !== "builtin" && !p.available)?.id ?? settings.providers[1]?.id ?? "fake";
   }
-  $("settings-nav").innerHTML = navHtml(settings, ui.selected);
+  $("settings-nav").innerHTML = navHtml(settings, ui.selected) + toolsNavHtml(ui.tools, ui.selected);
   const detail = $("settings-detail");
-  if (ui.selected === "jev") detail.innerHTML = jevHtml(settings, { checks: ui.checks });
+  if (ui.selected === "tool:new") detail.innerHTML = newToolServerHtml(ui.imports);
+  else if (ui.selected.startsWith("tool:")) {
+    const id = ui.selected.slice(5);
+    const server = ui.tools?.config.servers.find((candidate) => candidate.id === id);
+    const status = ui.tools?.capabilities?.servers.find((candidate) => candidate.id === id);
+    detail.innerHTML = server ? toolServerHtml(server, status, { filter: ui.toolFilter }) : `<p class="loading">Loading…</p>`;
+  } else if (ui.selected === "jev") detail.innerHTML = jevHtml(settings, { checks: ui.checks });
   else if (ui.selected === "new") detail.innerHTML = newEndpointHtml();
   else {
     const provider = settings.providers.find((p) => p.id === ui.selected);
@@ -344,6 +473,17 @@ async function onSubmit(event) {
       }
       break;
     }
+    case "tool-server": {
+      const id = form.dataset.server ?? String(data.get("id") ?? "").trim();
+      const body = {
+        command: String(data.get("command") ?? "").trim(),
+        args: String(data.get("args") ?? "").split("\n").map((arg) => arg.trim()).filter(Boolean),
+        cwd: String(data.get("cwd") ?? "").trim() || null,
+        enabled: data.get("enabled") === "on",
+      };
+      await saveToolServer(id, body, form.dataset.server ? "Saved and restarted." : `Added ${id}.`);
+      break;
+    }
     case "jev": {
       if (data.get("mode") === "offline") {
         await apply(api.clearJev(), "Jev classifies with the offline policy.");
@@ -397,6 +537,38 @@ async function onClick(event) {
     case "check":
       await check(provider);
       break;
+    case "tool-policy": {
+      const { server, tool, policy } = target.dataset;
+      try {
+        ui.tools = await api.setToolPolicy(server, tool ? { tool, policy } : { policy });
+        render();
+        await ui.onChange();
+      } catch (error) {
+        ui.notify(error.message, { error: true });
+      }
+      break;
+    }
+    case "remove-tool-server":
+      if (armed(target, "Click again to remove")) {
+        try {
+          ui.tools = await api.removeToolServer(target.dataset.server);
+          ui.selected = "tool:new";
+          render();
+          ui.notify(`Removed ${target.dataset.server}.`);
+          await ui.onChange();
+        } catch (error) {
+          ui.notify(error.message, { error: true });
+        }
+      }
+      break;
+    case "import-tool-server": {
+      const candidate = ui.imports?.servers[Number(target.dataset.index)];
+      if (candidate) {
+        const body = { command: candidate.command, args: candidate.args, cwd: candidate.cwd, enabled: true };
+        await saveToolServer(candidate.id, body, `Imported ${candidate.name}.`);
+      }
+      break;
+    }
   }
 }
 
@@ -415,6 +587,21 @@ function armed(button, prompt) {
   return false;
 }
 
+async function saveToolServer(id, body, message) {
+  ui.notify(`Starting ${id}…`);
+  try {
+    ui.tools = await api.saveToolServer(id, body);
+    ui.selected = `tool:${id}`;
+    ui.imports = await api.toolImports().catch(() => ui.imports);
+    render();
+    const status = ui.tools.capabilities?.servers.find((server) => server.id === id);
+    ui.notify(status?.error ? `${id} could not start: ${status.error}` : message, { error: Boolean(status?.error) });
+    await ui.onChange();
+  } catch (error) {
+    ui.notify(error.message, { error: true });
+  }
+}
+
 let bound = false;
 function bind() {
   if (bound) return;
@@ -422,6 +609,14 @@ function bind() {
   const dialog = $("settings");
   dialog.addEventListener("submit", onSubmit);
   dialog.addEventListener("click", onClick);
+  dialog.addEventListener("input", (event) => {
+    if (!event.target.matches("[data-settings-filter]")) return;
+    ui.toolFilter = event.target.value;
+    const needle = ui.toolFilter.trim().toLowerCase();
+    for (const row of dialog.querySelectorAll("[data-tool-row]")) {
+      row.hidden = Boolean(needle) && !row.dataset.toolRow.includes(needle);
+    }
+  });
   dialog.addEventListener("change", (event) => {
     if (event.target.name === "mode") syncJevForm();
     if (event.target.id === "jev-provider") {
@@ -447,7 +642,11 @@ export async function openSettings({ section = null, defaults, saveDefaults, onC
   if (!dialog.open) dialog.showModal();
   render();
   try {
-    ui.settings = await api.settings();
+    [ui.settings, ui.tools, ui.imports] = await Promise.all([
+      api.settings(),
+      api.tools(),
+      api.toolImports().catch(() => null),
+    ]);
     render();
   } catch (error) {
     notify(error.message, { error: true });

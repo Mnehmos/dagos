@@ -37,8 +37,9 @@ pub fn default_run_config() -> RunConfig {
 /// The optional MCP configuration inside the DAGOS directory.
 pub const MCP_FILE: &str = "mcp.json";
 
-/// How long each MCP server may take to describe its tools.
-const MCP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long each MCP server may take to start and describe its tools (a cold start of a Node
+/// server can take several seconds).
+const MCP_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// An opened workspace: its store, its project, and a runtime with the configured providers.
 ///

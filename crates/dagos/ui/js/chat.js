@@ -2,7 +2,7 @@
 // Pure functions (view models in, escaped HTML out), tested under Node like view.js. Every turn is
 // still a full DAGOS run; the chat only presents runs in order.
 
-import { esc } from "./view.js";
+import { esc, jsonHtml } from "./view.js";
 
 // ---------------------------------------------------------------------------------------------
 // Markdown: fenced code, inline code, bold, headings, lists, paragraphs, and http(s) links.
@@ -167,6 +167,8 @@ function turnMetaHtml(turn) {
   if (turn.emitted_nodes || turn.emitted_edges) {
     parts.push(`<span class="meta-canonical" title="Validated emissions that became durable DAG state">+${turn.emitted_nodes} node${turn.emitted_nodes === 1 ? "" : "s"}${turn.emitted_edges ? ` · +${turn.emitted_edges} edge${turn.emitted_edges === 1 ? "" : "s"}` : ""}</span>`);
   }
+  const tools = (turn.items ?? []).filter((item) => item.kind === "tool").length;
+  if (tools) parts.push(`<span title="Tool calls in this turn">${tools} tool call${tools === 1 ? "" : "s"}</span>`);
   parts.push(`<button type="button" class="link" data-inspect="${esc(run.id)}">Inspect</button>`);
   return `<div class="turn-meta">${parts.join('<span class="dot" aria-hidden="true">·</span>')}</div>`;
 }
@@ -180,23 +182,77 @@ function failureNoteHtml(turn) {
 }
 
 /** One turn: the user's message, then the reply (streaming, rendered, or failed). */
+const TOOL_STATUS = {
+  awaiting: "waiting",
+  running: "running…",
+  completed: "done",
+  failed: "failed",
+  denied: "denied",
+};
+
+/** A tool call's output as readable text: its text parts, an error, or JSON. */
+export function toolOutputText(output) {
+  if (output == null) return "";
+  if (typeof output.error === "string") return output.error;
+  const parts = Array.isArray(output.content) ? output.content : [];
+  const texts = parts.map((part) => (part.type === "text" ? part.text : part.note ?? `[${part.type}${part.uri ? ` ${part.uri}` : ""}]`));
+  if (texts.length) return texts.join("\n");
+  return JSON.stringify(output.structured ?? output, null, 2);
+}
+
+/** One tool call in a turn; calls waiting for a person get Allow / Deny buttons. */
+export function toolCardHtml(call, runId) {
+  const pending = call.pending && call.status === "awaiting";
+  const status = pending ? "needs approval" : TOOL_STATUS[call.status] ?? call.status;
+  const hasArguments = call.arguments && Object.keys(call.arguments).length;
+  const output = toolOutputText(call.output);
+  const approval = pending
+    ? `<div class="approval" role="group" aria-label="Approve ${esc(call.name)}">
+        <span>Run <code>${esc(call.name)}</code>?</span>
+        <button type="button" class="primary" data-approve="allow" data-run="${esc(runId)}" data-call="${esc(call.call_id)}">Allow once</button>
+        <button type="button" data-approve="always" data-run="${esc(runId)}" data-call="${esc(call.call_id)}" title="Set this tool to allow; later calls run without asking">Always allow</button>
+        <button type="button" class="danger" data-approve="deny" data-run="${esc(runId)}" data-call="${esc(call.call_id)}">Deny</button>
+      </div>`
+    : "";
+  return `<div class="tool-call status-${esc(call.status)}${pending ? " pending" : ""}" data-card="${esc(`${runId}:${call.call_id}`)}">
+    <details${pending ? " open" : ""}>
+      <summary><span class="tool-icon" aria-hidden="true">⚙</span><code class="tool-name">${esc(call.name)}</code><span class="tool-status">${esc(status)}</span></summary>
+      <div class="tool-body">
+        ${hasArguments ? `<p class="section-label">Arguments</p><pre class="json">${jsonHtml(call.arguments)}</pre>` : `<p class="hint">No arguments.</p>`}
+        ${call.reason ? `<p class="tool-reason">${esc(call.reason)}</p>` : ""}
+        ${output ? `<p class="section-label">${call.status === "failed" ? "Error" : "Result"}</p><pre class="tool-output">${esc(output)}</pre>` : ""}
+      </div>
+    </details>
+    ${approval}
+  </div>`;
+}
+
+/** One turn: the user's message, then each reply and tool call in order (streaming, rendered, or failed). */
 export function turnHtml(turn, { live = null } = {}) {
   const run = turn.run;
   const running = run.status === "running";
-  const prose = running && live && live.length > turn.prose.length ? live : turn.prose;
-  let reply;
+  const items = turn.items ?? (turn.prose ? [{ kind: "prose", text: turn.prose }] : []);
+  const steps = items.map((item) =>
+    item.kind === "tool"
+      ? toolCardHtml(item, run.id)
+      : `<div class="bubble assistant"><div class="md">${markdownHtml(item.text)}</div></div>`,
+  );
   if (running) {
-    reply = prose
-      ? `<div class="bubble assistant streaming"><div class="prose-live" data-live-run="${esc(run.id)}">${esc(prose)}</div></div>`
-      : `<div class="bubble assistant pending"><span class="typing" data-live-run="${esc(run.id)}" aria-label="Thinking"><i></i><i></i><i></i></span></div>`;
+    const streamed = live && live.length > (turn.streaming ?? "").length ? live : turn.streaming ?? "";
+    const waiting = items.some((item) => item.kind === "tool" && item.pending);
+    if (streamed && !waiting) {
+      steps.push(`<div class="bubble assistant streaming"><div class="prose-live" data-live-run="${esc(run.id)}">${esc(streamed)}</div></div>`);
+    } else if (!waiting) {
+      steps.push(`<div class="bubble assistant pending"><span class="typing" data-live-run="${esc(run.id)}" aria-label="Thinking"><i></i><i></i><i></i></span></div>`);
+    }
   } else if (run.status === "failed") {
-    reply = `<div class="bubble assistant failed">${prose ? `<div class="md">${markdownHtml(prose)}</div>` : ""}${failureNoteHtml(turn)}</div>`;
-  } else {
-    reply = `<div class="bubble assistant"><div class="md">${prose ? markdownHtml(prose) : '<p class="empty-note">(no reply)</p>'}</div></div>`;
+    steps.push(`<div class="bubble assistant failed">${failureNoteHtml(turn)}</div>`);
+  } else if (!items.length) {
+    steps.push(`<div class="bubble assistant"><div class="md"><p class="empty-note">(no reply)</p></div></div>`);
   }
   return `<article class="chat-turn status-${esc(run.status)}" data-turn="${esc(run.id)}">
     <div class="bubble user"><div class="md">${markdownHtml(turn.message ?? "")}</div></div>
-    ${reply}
+    ${steps.join("")}
     ${running ? "" : turnMetaHtml(turn)}
   </article>`;
 }

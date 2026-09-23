@@ -127,6 +127,8 @@ async function refresh() {
 // Live events
 
 function onEvent(event) {
+  // Each inference step streams afresh; validated prose is shown from the recorded turn.
+  if (event.type === "inference.started" || event.type === "response.validated") state.live[event.run_id] = "";
   if (event.type === "inference.delta") {
     state.live[event.run_id] = (state.live[event.run_id] ?? "") + event.payload.text;
     if (!showLiveProse(event.run_id)) scheduleRefresh();
@@ -205,10 +207,15 @@ function scrollToBottom() {
 
 function renderChat({ forceScroll = false } = {}) {
   const pinned = forceScroll || isPinned();
+  const opened = [...$("thread").querySelectorAll("[data-card] > details[open]")].map((details) => details.parentElement.dataset.card);
   $("chat-header").innerHTML = chat.chatHeaderHtml(state.conversation?.conversation, { renaming: state.renaming });
   $("thread").innerHTML = state.conversation?.turns.length
     ? chat.threadHtml(state.conversation, { live: state.live })
     : chat.newChatHtml(state.overview);
+  for (const card of opened) {
+    const details = $("thread").querySelector(`[data-card="${CSS.escape(card)}"] > details`);
+    if (details) details.open = true;
+  }
   if (pinned) scrollToBottom();
   if (state.renaming) $("chat-header").querySelector("input")?.select();
   renderTitle();
@@ -463,6 +470,20 @@ async function sendMessage(event) {
   }
 }
 
+async function answerTool(button) {
+  const { approve, run, call } = button.dataset;
+  const card = button.closest(".approval");
+  for (const other of card?.querySelectorAll("button") ?? []) other.disabled = true;
+  try {
+    await api.answerTool(run, call, { decision: approve === "deny" ? "deny" : "allow", remember: approve === "always" });
+    if (approve === "always") toast("Allowed. This tool now runs without asking; change it in Settings → Tools.");
+    scheduleRefresh();
+  } catch (error) {
+    showError(error);
+    scheduleRefresh();
+  }
+}
+
 async function renameConversation(title) {
   try {
     await api.updateConversation(state.conversationId, { title });
@@ -649,11 +670,12 @@ function autosize() {
 function onClick(event) {
   if (state.menuOpen && !event.target.closest(".project-switch")) toggleMenu(false);
   const target = event.target.closest(
-    "[data-conversation], [data-project], [data-inspect], [data-tab], [data-node], [data-copy], [data-close-node], [data-action]",
+    "[data-approve], [data-conversation], [data-project], [data-inspect], [data-tab], [data-node], [data-copy], [data-close-node], [data-action]",
   );
   if (!target || target.closest("#settings")) return;
   const data = target.dataset;
-  if (data.conversation) selectConversation(data.conversation).catch(showError);
+  if (data.approve) answerTool(target);
+  else if (data.conversation) selectConversation(data.conversation).catch(showError);
   else if (data.project) selectProject(data.project).catch(showError);
   else if (data.inspect) inspectRun(data.inspect);
   else if (data.tab) setTab(data.tab);

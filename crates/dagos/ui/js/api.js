@@ -40,6 +40,13 @@ export const api = {
   saveProjectConfig: (id, body) => request("PUT", `/api/projects/${encodeURIComponent(id)}/config`, body),
   conversation: (id) => request("GET", `/api/conversations/${encodeURIComponent(id)}`),
   updateConversation: (id, body) => request("PATCH", `/api/conversations/${encodeURIComponent(id)}`, body),
+  answerTool: (run, call, body) =>
+    request("POST", `/api/runs/${encodeURIComponent(run)}/tools/${encodeURIComponent(call)}`, body),
+  tools: () => request("GET", "/api/tools"),
+  toolImports: () => request("GET", "/api/tools/import"),
+  saveToolServer: (id, body) => request("PUT", `/api/tools/servers/${encodeURIComponent(id)}`, body),
+  removeToolServer: (id) => request("DELETE", `/api/tools/servers/${encodeURIComponent(id)}`),
+  setToolPolicy: (id, body) => request("PUT", `/api/tools/servers/${encodeURIComponent(id)}/policy`, body),
   settings: () => request("GET", "/api/settings"),
   saveKey: (id, key) => request("PUT", `/api/settings/providers/${encodeURIComponent(id)}/key`, { key }),
   removeKey: (id) => request("DELETE", `/api/settings/providers/${encodeURIComponent(id)}/key`),
