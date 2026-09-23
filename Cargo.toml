@@ -10,3 +10,12 @@ repository = "https://github.com/Mnehmos/dagos"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+
+# Keep debug builds small: line tables are enough for readable panics and backtraces in DAGOS's
+# own crates, and dependencies need no debug info at all. Full debug info made every test binary
+# large, and the build directory grew to tens of gigabytes.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
