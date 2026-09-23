@@ -22,6 +22,10 @@ pub enum ClassificationError {
     UnknownCandidate(NodeId),
     #[error("node `{0}` was classified more than once")]
     DuplicateClassification(NodeId),
+    #[error("tool `{0}` was not a candidate in the classification request")]
+    UnknownTool(String),
+    #[error("tool `{0}` was classified more than once")]
+    DuplicateTool(String),
 }
 
 /// How applying a classification changed a run's active context.
@@ -93,7 +97,13 @@ pub fn classification_request(
             edge_type: edge.edge_type,
         })
         .collect();
-    Ok(JevRequest { schema: JevRequestSchema, message: message.to_owned(), candidates, edges })
+    Ok(JevRequest {
+        schema: JevRequestSchema,
+        message: message.to_owned(),
+        candidates,
+        edges,
+        tools: Vec::new(),
+    })
 }
 
 /// Validates raw Jev output against the contract and against the request it answers.
@@ -114,6 +124,16 @@ pub fn validate_classification(
         }
         if !seen.insert(&entry.node_id) {
             return Err(ClassificationError::DuplicateClassification(entry.node_id.clone()));
+        }
+    }
+    let tools: BTreeSet<&str> = request.tools.iter().map(|tool| tool.name.as_str()).collect();
+    let mut seen_tools = BTreeSet::new();
+    for entry in &output.tools {
+        if !tools.contains(entry.name.as_str()) {
+            return Err(ClassificationError::UnknownTool(entry.name.clone()));
+        }
+        if !seen_tools.insert(entry.name.as_str()) {
+            return Err(ClassificationError::DuplicateTool(entry.name.clone()));
         }
     }
     Ok(output)

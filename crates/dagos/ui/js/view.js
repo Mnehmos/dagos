@@ -199,6 +199,27 @@ function contextPanelHtml(detail, dag) {
     <p class="hint">${view.carried.length} node(s) were carried from the previous run before Jev classified.</p>`;
 }
 
+/** The tools Jev was offered for a run, its label for each, and which the model saw. */
+export function jevToolsHtml(detail) {
+  const offered = detail.jev_request?.tools ?? [];
+  if (!offered.length) return "";
+  const labels = new Map((detail.classification?.tools ?? []).map((entry) => [entry.name, entry.classification]));
+  const exposed = new Set((detail.ir?.tools ?? []).map((tool) => tool.name));
+  const rows = offered
+    .map((tool) => {
+      const label = labels.get(tool.name);
+      return `<tr class="${exposed.has(tool.name) ? "tool-exposed" : "tool-hidden"}">
+        <td class="grow"><code>${esc(tool.name)}</code></td>
+        <td>${label ? `<span class="label label-${esc(label)}">${esc(label)}</span>` : "—"}</td>
+        <td>${detail.ir ? (exposed.has(tool.name) ? "shown to the model" : "hidden") : "…"}</td>
+      </tr>`;
+    })
+    .join("");
+  return `<h3>Tools</h3>
+    <p class="hint">Jev decides which tools the model sees this turn: ${exposed.size} of ${offered.length} exposed. Unlabeled tools stay exposed; whether a call may run is still up to each tool's policy.</p>
+    <table class="grid"><thead><tr><th class="grow">Tool</th><th>Label</th><th>Model</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
 function jevPanelHtml(detail) {
   if (!detail.jev_request) {
     return `<p class="empty-note">Jev has not been asked yet.</p>`;
@@ -234,6 +255,7 @@ function jevPanelHtml(detail) {
         ? `<table class="grid"><thead><tr><th class="grow">Candidate</th><th>Type</th><th>Before</th><th>Label</th><th>Effect</th></tr></thead><tbody>${rows}</tbody></table>`
         : `<p class="empty-note">There were no candidates: the run's own message is its task, and the project had no other nodes.</p>`
     }
+    ${jevToolsHtml(detail)}
     <details><summary>Request <code>kiss.jev-request.v1</code></summary><pre class="json">${jsonHtml(detail.jev_request)}</pre></details>
     ${detail.classification ? `<details><summary>Output <code>kiss.jev-context.v1</code></summary><pre class="json">${jsonHtml(detail.classification)}</pre></details>` : ""}`;
 }

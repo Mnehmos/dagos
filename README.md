@@ -126,6 +126,12 @@ are copied; environment values never are). They are stored in `.dagos/mcp.json`:
               "cwd": "C:/tools/ooda", "policy": "off", "tools": {"read_file": "ask", "exec_cli": "ask"}}]}
 ```
 
+**Jev decides which tools the model sees.** All enabled tools are offered to Jev each turn with a
+short description; Jev labels each one it needs `active` and the rest `inactive`, and only the
+tools it does not hide go into that turn's IR. TypeSafe's Jev answers one yes/no question per tool.
+Without a model Jev, every offered tool stays visible. Each turn shows `tools 5/93`, and the
+inspector's Jev tab lists every tool with its label.
+
 Every tool has a policy: **Off** (not offered to models), **Ask** (the default: the chat shows
 Allow once / Always allow / Deny before the call runs, and an unanswered call is denied after 10
 minutes), or **Allow** (runs without asking). Offer only what you need: each offered tool's

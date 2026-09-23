@@ -65,6 +65,9 @@ pub struct TurnView {
     pub jev_fallback: bool,
     pub emitted_nodes: usize,
     pub emitted_edges: usize,
+    /// How many tools were offered, and how many of them Jev exposed to the model.
+    pub tools_offered: usize,
+    pub tools_exposed: usize,
     /// What the turn showed, in order: each validated reply's prose and each tool call.
     pub items: Vec<TurnItem>,
     /// Prose streamed since the last validated reply, while the run is still running.
@@ -310,9 +313,12 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
         jev_fallback: false,
         emitted_nodes: 0,
         emitted_edges: 0,
+        tools_offered: 0,
+        tools_exposed: 0,
         items: Vec::new(),
         streaming: String::new(),
     };
+    let mut first_ir = true;
     let mut streamed = String::new();
     let mut validated: Vec<String> = Vec::new();
     let mut calls: Vec<ToolCallView> = Vec::new();
@@ -326,8 +332,15 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
         }
         match &event.data {
             EventData::MessageRecorded { text, .. } => view.message = Some(text.clone()),
-            EventData::JevRequested { jev_id, .. } => view.jev_id = Some(jev_id.clone()),
+            EventData::JevRequested { jev_id, request } => {
+                view.jev_id = Some(jev_id.clone());
+                view.tools_offered = request.tools.len();
+            }
             EventData::JevFallback { .. } => view.jev_fallback = true,
+            EventData::IrCompiled { ir } if first_ir => {
+                view.tools_exposed = ir.tools.len();
+                first_ir = false;
+            }
             EventData::InferenceDelta { text } => streamed.push_str(text),
             EventData::InferenceStarted { .. } => streamed.clear(),
             EventData::ResponseValidated { response } => {

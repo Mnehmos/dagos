@@ -87,3 +87,17 @@ test("imports offer Claude Desktop servers and flag the ones needing environment
   assert.ok(html.includes("Added") && html.includes("does not copy"));
   assert.ok(!newToolServerHtml(null).includes("From Claude Desktop"));
 });
+
+test("the Jev tab shows each offered tool, its label, and whether the model saw it", async () => {
+  const { jevToolsHtml } = await import("../js/view.js");
+  const detail = {
+    jev_request: { tools: [{ name: "ooda.read_file", description: "" }, { name: "ooda.mouse_click", description: "" }, { name: "ooda.exec_cli", description: "" }] },
+    classification: { tools: [{ name: "ooda.read_file", classification: "active" }, { name: "ooda.mouse_click", classification: "inactive" }] },
+    ir: { tools: [{ name: "ooda.read_file" }, { name: "ooda.exec_cli" }] },
+  };
+  const html = jevToolsHtml(detail);
+  assert.ok(html.includes("2 of 3 exposed"));
+  assert.ok(/tool-hidden">\s*<td class="grow"><code>ooda.mouse_click/.test(html));
+  assert.ok(html.includes("label-inactive") && html.includes("hidden"));
+  assert.equal(jevToolsHtml({ jev_request: { tools: [] } }), "");
+});

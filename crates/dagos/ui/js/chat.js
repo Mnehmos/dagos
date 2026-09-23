@@ -95,6 +95,9 @@ function turnMetaHtml(turn) {
   if (turn.emitted_nodes || turn.emitted_edges) {
     parts.push(`<span class="meta-canonical" title="Validated emissions that became durable DAG state">+${turn.emitted_nodes} node${turn.emitted_nodes === 1 ? "" : "s"}${turn.emitted_edges ? ` · +${turn.emitted_edges} edge${turn.emitted_edges === 1 ? "" : "s"}` : ""}</span>`);
   }
+  if (turn.tools_offered) {
+    parts.push(`<span title="Tools Jev exposed to the model this turn, of those offered">tools ${turn.tools_exposed}/${turn.tools_offered}</span>`);
+  }
   const tools = (turn.items ?? []).filter((item) => item.kind === "tool").length;
   if (tools) parts.push(`<span title="Tool calls in this turn">${tools} tool call${tools === 1 ? "" : "s"}</span>`);
   parts.push(`<button type="button" class="link" data-inspect="${esc(run.id)}">Inspect</button>`);

@@ -25,6 +25,19 @@
         "additionalProperties": false
       }
     },
+    "tools": {
+      "description": "Tools that could be exposed to the model for this run. Jev labels each one it needs (active) or does not need (inactive); only exposed tools reach the IR.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "description": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
     "edges": {
       "type": "array",
       "items": {

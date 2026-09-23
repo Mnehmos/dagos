@@ -9,7 +9,7 @@ use common::payload;
 use dagos_core::contracts::{Contract, ContractError};
 use dagos_core::domain::{
     Classification, ContextClassification, EdgeType, JevCandidate, JevEdge, JevRequest,
-    JevRequestSchema, NodeId, NodeType,
+    JevRequestSchema, JevToolCandidate, NodeId, NodeType,
 };
 use serde_json::{Value, json};
 
@@ -151,6 +151,10 @@ fn request() -> JevRequest {
             from: NodeId::parse("node_000002").unwrap(),
             to: NodeId::parse("node_000001").unwrap(),
             edge_type: EdgeType::Supersedes,
+        }],
+        tools: vec![JevToolCandidate {
+            name: "ooda.read_file".into(),
+            description: "Read file contents.".into(),
         }],
     }
 }

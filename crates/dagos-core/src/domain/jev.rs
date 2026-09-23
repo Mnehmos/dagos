@@ -23,6 +23,18 @@ pub struct JevRequest {
     pub candidates: Vec<JevCandidate>,
     /// The edges between candidates, oldest first.
     pub edges: Vec<JevEdge>,
+    /// Tools that could be exposed to the model for this run; omitted when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<JevToolCandidate>,
+}
+
+/// A tool Jev may expose to the model for one run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JevToolCandidate {
+    /// The tool's name as the IR lists it, e.g. `ooda.read_file`.
+    pub name: String,
+    pub description: String,
 }
 
 /// A node Jev may classify.
@@ -53,6 +65,18 @@ pub struct JevEdge {
 pub struct ContextClassification {
     pub schema: JevContextSchema,
     pub classifications: Vec<NodeClassification>,
+    /// Which candidate tools the model sees in this run: `active` exposes a tool, `inactive` hides
+    /// it. Tools left out stay exposed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<ToolClassification>,
+}
+
+/// One tool's exposure label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolClassification {
+    pub name: String,
+    pub classification: Classification,
 }
 
 /// One node's classification label.

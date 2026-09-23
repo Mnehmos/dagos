@@ -34,7 +34,10 @@ pub use ir::{
     InferenceIr, IrContextItem, IrEvent, IrEventType, IrRelation, IrTask, IrTool, IrToolResult,
     IrToolStatus,
 };
-pub use jev::{ContextClassification, JevCandidate, JevEdge, JevRequest, NodeClassification};
+pub use jev::{
+    ContextClassification, JevCandidate, JevEdge, JevRequest, JevToolCandidate, NodeClassification,
+    ToolClassification,
+};
 pub use project::{Conversation, Project};
 pub use response::{
     Emission, EmissionRef, EmissionRefError, Endpoint, InferenceResponse, Presentation, ToolCall,

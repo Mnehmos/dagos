@@ -98,7 +98,7 @@ impl FakeJev {
                 }
             })
             .collect();
-        ContextClassification { schema: JevContextSchema, classifications }
+        ContextClassification { schema: JevContextSchema, classifications, tools: Vec::new() }
     }
 }
 

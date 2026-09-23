@@ -455,3 +455,47 @@ async fn malformed_decisions_answers_fail_the_jev_not_the_dag() {
         EventData::JevFallback { reason, .. } if reason.contains("not a noul probability")
     )));
 }
+
+#[tokio::test]
+async fn typesafe_jev_also_decides_which_tools_the_model_sees() {
+    let (store, project, [keep, _], config) = jev_setup();
+    let tool = |name: &str| dagos_core::domain::IrTool {
+        name: name.into(),
+        description: format!("The {name} tool."),
+        input_schema: serde_json::Map::new(),
+    };
+    let response = json!({"answers": {
+        keep.as_str(): {"type": "noul", "noul": 0.9},
+        "tool:ooda.read_file": {"type": "noul", "noul": 0.97},
+        "tool:ooda.mouse_click": {"type": "noul", "noul": 0.02}
+    }})
+    .to_string();
+    let (base_url, request) = mock("200 OK", "application/json", vec![response]).await;
+    let jev = DecisionsJev::new(
+        provider(&base_url, true),
+        ModelId::parse("~typesafe/jev-latest").unwrap(),
+    );
+    let runtime = Runtime::new(store.clone(), Arc::new(jev))
+        .with_provider(Arc::new(FakeProvider::new()))
+        .with_tools(vec![tool("ooda.read_file"), tool("ooda.mouse_click"), tool("ooda.exec_cli")]);
+
+    let run = runtime.run(&project, "Read the README", &config).await.unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    let ir_tools: Vec<String> = events
+        .into_iter()
+        .find_map(|event| match event.data {
+            EventData::IrCompiled { ir } => {
+                Some(ir.tools.into_iter().map(|tool| tool.name).collect())
+            }
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(ir_tools, ["ooda.read_file", "ooda.exec_cli"], "unanswered tools stay exposed");
+
+    let captured = request.await.unwrap();
+    let question = &captured.body["questions"]["tool:ooda.mouse_click"];
+    assert_eq!(question["type"], "noul");
+    assert_eq!(question["instructions"]["tool"]["name"], "ooda.mouse_click");
+    assert_eq!(captured.body["questions"].as_object().unwrap().len(), 5, "2 nodes + 3 tools");
+}

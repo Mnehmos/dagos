@@ -75,11 +75,15 @@ You are Jev, the context classifier of DAGOS. You only classify.
 
 The user message is a kiss.jev-request.v1 JSON document: the user's `message`, the `candidates` \
 (durable DAG nodes, oldest first, each with `in_context` telling whether it is in the active \
-context carried over from the previous run), and the `edges` between them.
+context carried over from the previous run), the `edges` between them, and optionally the `tools` \
+the assistant could be given.
 
 For each candidate, decide whether it belongs in the active context for answering `message`: \
 `active` if it is relevant, `inactive` if it is not (for example superseded by a newer node, \
 stale, or unrelated). Candidates you leave out keep their current membership.
+
+If the request lists `tools`, label each one in `tools`: `active` if answering `message` may need \
+it, `inactive` if not. Only active (and unlabeled) tools are shown to the assistant this turn.
 
 You never answer the message, plan, choose providers or models, call tools, or explain yourself. \
 Reply with exactly one JSON object that satisfies kiss.jev-context.v1 and nothing else: no \
@@ -118,7 +122,7 @@ pub const ACTIVE_THRESHOLD: f64 = 0.5;
 /// Jev): one `noul` question per candidate, keyed by node ID, over the request as shared state.
 pub fn decisions_body(model_id: &ModelId, request: &JevRequest) -> Value {
     let count = request.candidates.len();
-    let questions: serde_json::Map<String, Value> = request
+    let mut questions: serde_json::Map<String, Value> = request
         .candidates
         .iter()
         .enumerate()
@@ -143,6 +147,22 @@ pub fn decisions_body(model_id: &ModelId, request: &JevRequest) -> Value {
             (candidate.node_id.to_string(), question)
         })
         .collect();
+    for tool in &request.tools {
+        let question = json!({
+            "type": "noul",
+            "instructions": {
+                "task": "Decide whether answering the user's message in `state.message` may need \
+                         this tool. Only tools judged needed are shown to the assistant.",
+                "tool": tool,
+            },
+            "criteria": {
+                "true": "The message asks for something this tool does or helps find out, or the \
+                         recent conversation (`state.latest_messages`) is about work it serves.",
+                "false": "Answering the message will not need this tool.",
+            },
+        });
+        questions.insert(tool_key(&tool.name), question);
+    }
     json!({
         "model": model_id.as_str(),
         "questions": questions,
@@ -197,7 +217,30 @@ pub fn classification_from_decisions(
         let label = if probability >= ACTIVE_THRESHOLD { "active" } else { "inactive" };
         classifications.push(json!({"node_id": candidate.node_id, "classification": label}));
     }
-    Ok(json!({"schema": "kiss.jev-context.v1", "classifications": classifications}).to_string())
+    let mut tools = Vec::new();
+    for tool in &request.tools {
+        let Some(answer) = answers.get(&tool_key(&tool.name)) else { continue };
+        let probability =
+            answer.get("noul").and_then(Value::as_f64).filter(|p| (0.0..=1.0).contains(p));
+        let Some(probability) = probability else {
+            return Err(format!(
+                "the answer for tool {} is not a noul probability: {answer}",
+                tool.name
+            ));
+        };
+        let label = if probability >= ACTIVE_THRESHOLD { "active" } else { "inactive" };
+        tools.push(json!({"name": tool.name, "classification": label}));
+    }
+    let mut document = json!({"schema": "kiss.jev-context.v1", "classifications": classifications});
+    if !tools.is_empty() {
+        document["tools"] = json!(tools);
+    }
+    Ok(document.to_string())
+}
+
+/// The Decisions question key for a tool; the prefix keeps it apart from node IDs.
+fn tool_key(name: &str) -> String {
+    format!("tool:{name}")
 }
 
 /// The longest plain-text preamble removed before a response document.

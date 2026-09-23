@@ -25,7 +25,13 @@ fn candidate(n: u32, node_type: NodeType) -> JevCandidate {
 }
 
 fn request(candidates: Vec<JevCandidate>, edges: Vec<JevEdge>) -> JevRequest {
-    JevRequest { schema: JevRequestSchema, message: "What next?".into(), candidates, edges }
+    JevRequest {
+        schema: JevRequestSchema,
+        message: "What next?".into(),
+        candidates,
+        edges,
+        tools: vec![],
+    }
 }
 
 async fn classify(jev: &FakeJev, request: &JevRequest) -> Vec<(NodeId, Classification)> {

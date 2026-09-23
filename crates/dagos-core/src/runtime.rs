@@ -18,6 +18,7 @@ use crate::context::{
     JevClassifier, apply_classification, carry_context, classification_request,
     validate_classification,
 };
+use crate::domain::{Classification, JevToolCandidate};
 use crate::domain::{
     ContextClassification, ConversationId, ConversationTurn, Emission, EmissionRef, Endpoint,
     ErrorCode, EventData, InferenceIr, IrTool, JevRequest, NodeId, NodeType, ProjectId, ProviderId,
@@ -298,11 +299,12 @@ impl Runtime {
         message: &str,
         provider: &dyn InferenceProvider,
     ) -> Result<Run, StageFailure> {
-        self.classify_context(run, task, message).await?;
+        let classification = self.classify_context(run, task, message).await?;
+        let tools = exposed_tools(&self.tools, &classification);
         let mut rounds = 0;
         let mut next_call = 1;
         loop {
-            let ir = self.compile_ir(run, task)?;
+            let ir = self.compile_ir(run, task, &tools)?;
             let raw = self.infer(run, &ir, provider).await?;
             let validated = validate_response(&raw, &ir).map_err(|error| {
                 StageFailure::new(ErrorCode::ResponseInvalid, format!("response rejected: {error}"))
@@ -415,15 +417,19 @@ impl Runtime {
         run: &Run,
         task: &NodeId,
         message: &str,
-    ) -> Result<(), StageFailure> {
+    ) -> Result<ContextClassification, StageFailure> {
         let request = self.store.transaction(|tx| {
-            let request = classification_request(tx, run, task, message)?;
+            let mut request = classification_request(tx, run, task, message)?;
+            request.tools = self.tools.iter().map(tool_candidate).collect();
             let jev_id = self.jev.id().to_owned();
             tx.append_event(&run.id, EventData::JevRequested { jev_id, request: request.clone() })?;
             Ok::<_, StoreError>(request)
         })?;
         let failure = match self.classify_with(self.jev.as_ref(), &request).await {
-            Ok(classification) => return self.apply(run, &classification),
+            Ok(classification) => {
+                self.apply(run, &classification)?;
+                return Ok(classification);
+            }
             Err(failure) => failure,
         };
         let Some(fallback) = &self.jev_fallback else { return Err(failure) };
@@ -435,7 +441,8 @@ impl Runtime {
             tx.append_event(&run.id, EventData::JevFallback { jev_id, reason: failure.message })
         })?;
         let classification = self.classify_with(fallback.as_ref(), &request).await?;
-        self.apply(run, &classification)
+        self.apply(run, &classification)?;
+        Ok(classification)
     }
 
     /// One classification attempt by `jev`: under the deadline, then validated against the
@@ -463,9 +470,14 @@ impl Runtime {
         Ok(())
     }
 
-    fn compile_ir(&self, run: &Run, task: &NodeId) -> Result<InferenceIr, StageFailure> {
+    fn compile_ir(
+        &self,
+        run: &Run,
+        task: &NodeId,
+        tools: &[IrTool],
+    ) -> Result<InferenceIr, StageFailure> {
         self.store.transaction(|tx| {
-            let ir = compile(tx, &run.id, task, &self.tools).map_err(|error| match error {
+            let ir = compile(tx, &run.id, task, tools).map_err(|error| match error {
                 CompileError::Contract(violation) => {
                     StageFailure::new(ErrorCode::IrInvalid, violation.to_string())
                 }
@@ -517,6 +529,30 @@ impl Runtime {
         })?;
         Ok(raw)
     }
+}
+
+/// The longest tool description Jev is shown; the model still gets the full description.
+const JEV_TOOL_DESCRIPTION_CHARS: usize = 300;
+
+/// A tool as Jev sees it: its name and the start of its description.
+fn tool_candidate(tool: &IrTool) -> JevToolCandidate {
+    let mut description: String =
+        tool.description.chars().take(JEV_TOOL_DESCRIPTION_CHARS).collect();
+    if description.len() < tool.description.len() {
+        description.push('…');
+    }
+    JevToolCandidate { name: tool.name.clone(), description }
+}
+
+/// The tools the model sees in a run: every offered tool Jev did not classify `inactive`.
+fn exposed_tools(tools: &[IrTool], classification: &ContextClassification) -> Vec<IrTool> {
+    let hidden: BTreeSet<&str> = classification
+        .tools
+        .iter()
+        .filter(|entry| entry.classification == Classification::Inactive)
+        .map(|entry| entry.name.as_str())
+        .collect();
+    tools.iter().filter(|tool| !hidden.contains(tool.name.as_str())).cloned().collect()
 }
 
 /// Records `response.validated` and creates the response's nodes and then its edges. Runs inside

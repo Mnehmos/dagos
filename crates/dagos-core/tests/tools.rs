@@ -261,3 +261,71 @@ async fn unknown_tools_are_unavailable_and_runs_stop_at_the_step_limit() {
     );
     assert_eq!(irs(&store, &run).len(), 3, "two tool rounds, then the limit ends the run");
 }
+
+fn with_jev(jev: FakeJev) -> (Arc<Store>, Runtime, ProjectId) {
+    let store = Arc::new(memory_store());
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let runtime = Runtime::new(store.clone(), Arc::new(jev))
+        .with_provider(Arc::new(FakeProvider::new()))
+        .with_tools(vec![tool("files.read"), tool("files.write")])
+        .with_tool_runner(Arc::new(Recorder::default()), Arc::new(AllowAll));
+    (store, runtime, project)
+}
+
+#[tokio::test]
+async fn jev_decides_which_tools_the_model_sees_in_a_run() {
+    let hide_write = r#"{"schema":"kiss.jev-context.v1","classifications":[],
+        "tools":[{"name":"files.write","classification":"inactive"}]}"#;
+    let (store, runtime, project) = with_jev(FakeJev::scripted(hide_write));
+    let run = runtime.run(&project, "files.write {}", &config("fake-tool")).await.unwrap();
+    assert_eq!(run.status, RunStatus::Completed);
+
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    let request = events
+        .iter()
+        .find_map(|event| match &event.data {
+            EventData::JevRequested { request, .. } => Some(request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    let offered: Vec<&str> = request.tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(offered, ["files.read", "files.write"], "Jev sees every offered tool");
+
+    let irs = irs(&store, &run);
+    let exposed: Vec<&str> = irs[0].tools.iter().map(|tool| tool.name.as_str()).collect();
+    assert_eq!(exposed, ["files.read"], "hidden tools never reach the model");
+    // fake-tool falls back to the first exposed tool, so the hidden one is never even requested.
+    assert_eq!(irs[1].tool_results[0].name, "files.read");
+}
+
+#[tokio::test]
+async fn unlabeled_tools_stay_exposed_and_bad_tool_labels_are_rejected() {
+    let (store, runtime, project) = with_jev(FakeJev::new());
+    let run = runtime.run(&project, "hi", &config("fake-echo")).await.unwrap();
+    assert_eq!(irs(&store, &run)[0].tools.len(), 2, "the offline policy labels no tools");
+
+    for (label, reason) in [
+        (r#"[{"name":"shell.rm","classification":"active"}]"#, "was not a candidate"),
+        (
+            r#"[{"name":"files.read","classification":"active"},{"name":"files.read","classification":"inactive"}]"#,
+            "more than once",
+        ),
+        (r#"[{"name":"files.read","classification":"run"}]"#, ""),
+    ] {
+        let raw =
+            format!(r#"{{"schema":"kiss.jev-context.v1","classifications":[],"tools":{label}}}"#);
+        let (store, runtime, project) = with_jev(FakeJev::scripted(raw));
+        let run = runtime.run(&project, "hi", &config("fake-echo")).await.unwrap();
+        assert_eq!(
+            run.error_code,
+            Some(dagos_core::domain::ErrorCode::JevInvalidOutput),
+            "{label}"
+        );
+        let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+        let rejected = events.iter().find_map(|event| match &event.data {
+            EventData::JevRejected { reason, .. } => Some(reason.clone()),
+            _ => None,
+        });
+        assert!(rejected.unwrap().contains(reason), "{label}");
+    }
+}

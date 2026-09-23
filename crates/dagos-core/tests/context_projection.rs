@@ -62,6 +62,7 @@ fn classification(entries: &[(&NodeId, Classification)]) -> ContextClassificatio
                 classification: *classification,
             })
             .collect(),
+        tools: vec![],
     }
 }
 

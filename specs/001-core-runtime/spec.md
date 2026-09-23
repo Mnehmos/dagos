@@ -36,6 +36,7 @@ FR-020 Core state transitions have automated tests.
 FR-021 A model-backed Jev is optional: when it fails or its output is rejected, the run records why and the offline classifier classifies the same request.
 FR-022 Provider API keys can be managed in the app; saved keys live per user outside the project and never appear in the database, the IR, or API responses.
 FR-023 Runs belong to conversations inside a project: a conversation carries active context between its runs and gives the IR its recent turns (request and reply); all conversations of a project share its durable DAG. Conversations are renamed or archived, never deleted.
+FR-024 Jev may also classify tool candidates active or inactive per run; only tools it does not mark inactive are compiled into the IR. Tool permission remains with the tool policy and the person.
 
 ## Acceptance Scenarios
 1. Empty project + user message creates conversation state and a run.

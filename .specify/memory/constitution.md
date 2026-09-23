@@ -21,5 +21,7 @@ Autonomous multi-agent orchestration, provider routing, embeddings, vector datab
 ## Amendments
 - 2026-09-23: Principle 7 allows person-controlled tool execution through MCP (requested by the project owner). DAGOS still does not plan, pursue goals, retry, or act on its own: every run starts from a person's message, and every tool call is either pre-permitted by that person's policy or approved by them.
 
+- 2026-09-23: Jev also classifies which offered tools the model sees in a run (requested by the project owner): the same `active` / `inactive` membership labels, applied to tool candidates instead of nodes. It is still classification only: Jev never calls, permits, or orders tools; each tool's policy and the person still decide whether a call runs, and without a model Jev every offered tool stays exposed.
+
 ## Change Rule
 Expanding Jev beyond classification or turning DAGOS into an autonomous agent framework requires an explicit constitution change.
