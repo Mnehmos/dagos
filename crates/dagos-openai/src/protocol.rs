@@ -200,10 +200,15 @@ pub fn classification_from_decisions(
     Ok(json!({"schema": "kiss.jev-context.v1", "classifications": classifications}).to_string())
 }
 
+/// The longest plain-text preamble removed before a response document.
+const MAX_PREAMBLE_CHARS: usize = 1_000;
+
 /// The response document inside a model's final output, for two harmless quirks of chat models:
-/// the whole document wrapped in a Markdown code fence, or a one-line preamble that repeats (part
-/// of) the document's own `presentation.prose` before the object. Nothing is lost by removing
-/// either. Any other output is returned unchanged, so validation still fails closed on it.
+/// the whole document wrapped in a Markdown code fence, or a short plain-text preamble (a note on
+/// what the model is about to do, usually a paraphrase of its own `presentation.prose`) before
+/// the object. The document must be everything after the preamble and the preamble must hold no
+/// JSON, so only presentation text is dropped. Any other output is returned unchanged, so
+/// validation still fails closed on it.
 pub fn unwrap_document(output: &str) -> String {
     let trimmed = output.trim();
     if let Some(inner) = strip_fence(trimmed)
@@ -211,23 +216,16 @@ pub fn unwrap_document(output: &str) -> String {
     {
         return inner.to_owned();
     }
-    if trimmed.starts_with('{') {
+    let Some(start) = trimmed.find('{') else { return output.to_owned() };
+    let preamble = &trimmed[..start];
+    if start == 0 || preamble.contains('}') || preamble.chars().count() > MAX_PREAMBLE_CHARS {
         return output.to_owned();
     }
-    for (index, _) in trimmed.match_indices('{') {
-        let Ok(document @ Value::Object(_)) = serde_json::from_str::<Value>(&trimmed[index..])
-        else {
-            continue;
-        };
-        let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let preamble = words(&trimmed[..index]);
-        let prose = document.pointer("/presentation/prose").and_then(Value::as_str).unwrap_or("");
-        if !preamble.is_empty() && words(prose).contains(&preamble) {
-            return trimmed[index..].to_owned();
-        }
-        break;
+    let document = &trimmed[start..];
+    match serde_json::from_str::<Value>(document) {
+        Ok(Value::Object(_)) => document.to_owned(),
+        _ => output.to_owned(),
     }
-    output.to_owned()
 }
 
 /// The content of a whole-output Markdown code fence (```` ```json … ``` ````), if it is one.
@@ -245,11 +243,12 @@ mod tests {
     const DOCUMENT: &str = r#"{"schema":"kiss.inference-response.v1","presentation":{"prose":"I'll check the system information."},"emissions":[]}"#;
 
     #[test]
-    fn a_preamble_repeating_the_prose_is_removed() {
+    fn a_short_plain_text_preamble_is_removed() {
         let output = format!("I'll check the system information.\n\n{DOCUMENT}");
         assert_eq!(unwrap_document(&output), DOCUMENT);
-        let partial = format!("I'll check  the system\ninformation.\n{DOCUMENT}");
-        assert_eq!(unwrap_document(&partial), DOCUMENT, "whitespace differences do not matter");
+        let paraphrase =
+            format!("I'll run a safe smoke test first, nothing destructive.\n{DOCUMENT}");
+        assert_eq!(unwrap_document(&paraphrase), DOCUMENT, "a paraphrase of the prose is fine too");
     }
 
     #[test]
@@ -262,12 +261,12 @@ mod tests {
 
     #[test]
     fn anything_else_is_left_for_validation_to_reject() {
-        let different = format!("Here is something else entirely.\n{DOCUMENT}");
-        assert_eq!(
-            unwrap_document(&different),
-            different,
-            "text not in the prose is never dropped"
-        );
+        let json_before = format!("{{\"a\": 1}} and then\n{DOCUMENT}");
+        assert_eq!(unwrap_document(&json_before), json_before, "a preamble holding JSON is kept");
+        let long = format!("{}\n{DOCUMENT}", "word ".repeat(300));
+        assert_eq!(unwrap_document(&long), long, "long preambles are not presentation notes");
+        let broken = "Sure!\n{\"schema\": ";
+        assert_eq!(unwrap_document(broken), broken);
         let trailing = format!("{DOCUMENT}\nDone!");
         assert_eq!(unwrap_document(&trailing), trailing);
         assert_eq!(unwrap_document("not json at all"), "not json at all");
