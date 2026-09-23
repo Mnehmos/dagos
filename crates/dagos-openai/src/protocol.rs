@@ -19,8 +19,10 @@ message) and your reply (prose), or why that turn failed.
 - tools, if present, are tools you may use. To use them, list calls in \"tool_calls\" (name exactly \
 as listed, arguments matching its input_schema). DAGOS runs the calls the person permits and sends \
 you a new IR whose tool_results say what each returned, failed with, or why it was denied; keep \
-going until you can answer, then reply without tool_calls. Say briefly in prose what you are doing \
-and why. Some tools act on the person's computer: call only what the request needs.
+going until you can answer, then reply without tool_calls. Every reply, including one that only \
+calls tools, is still exactly one JSON object: say what you are doing in presentation.prose, never \
+before or after the object. Some tools act on the person's computer: call only what the request \
+needs.
 - tool_results, if present, are this request's earlier tool calls and their outcomes.
 
 Reply with exactly one JSON object that satisfies kiss.inference-response.v1 and nothing else: no \
@@ -196,4 +198,81 @@ pub fn classification_from_decisions(
         classifications.push(json!({"node_id": candidate.node_id, "classification": label}));
     }
     Ok(json!({"schema": "kiss.jev-context.v1", "classifications": classifications}).to_string())
+}
+
+/// The response document inside a model's final output, for two harmless quirks of chat models:
+/// the whole document wrapped in a Markdown code fence, or a one-line preamble that repeats (part
+/// of) the document's own `presentation.prose` before the object. Nothing is lost by removing
+/// either. Any other output is returned unchanged, so validation still fails closed on it.
+pub fn unwrap_document(output: &str) -> String {
+    let trimmed = output.trim();
+    if let Some(inner) = strip_fence(trimmed)
+        && matches!(serde_json::from_str::<Value>(inner), Ok(Value::Object(_)))
+    {
+        return inner.to_owned();
+    }
+    if trimmed.starts_with('{') {
+        return output.to_owned();
+    }
+    for (index, _) in trimmed.match_indices('{') {
+        let Ok(document @ Value::Object(_)) = serde_json::from_str::<Value>(&trimmed[index..])
+        else {
+            continue;
+        };
+        let words = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let preamble = words(&trimmed[..index]);
+        let prose = document.pointer("/presentation/prose").and_then(Value::as_str).unwrap_or("");
+        if !preamble.is_empty() && words(prose).contains(&preamble) {
+            return trimmed[index..].to_owned();
+        }
+        break;
+    }
+    output.to_owned()
+}
+
+/// The content of a whole-output Markdown code fence (```` ```json … ``` ````), if it is one.
+fn strip_fence(text: &str) -> Option<&str> {
+    let body = text.strip_prefix("```")?.strip_suffix("```")?;
+    let (language, content) = body.split_once('\n')?;
+    (language.trim().is_empty() || language.trim().eq_ignore_ascii_case("json"))
+        .then(|| content.trim())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unwrap_document;
+
+    const DOCUMENT: &str = r#"{"schema":"kiss.inference-response.v1","presentation":{"prose":"I'll check the system information."},"emissions":[]}"#;
+
+    #[test]
+    fn a_preamble_repeating_the_prose_is_removed() {
+        let output = format!("I'll check the system information.\n\n{DOCUMENT}");
+        assert_eq!(unwrap_document(&output), DOCUMENT);
+        let partial = format!("I'll check  the system\ninformation.\n{DOCUMENT}");
+        assert_eq!(unwrap_document(&partial), DOCUMENT, "whitespace differences do not matter");
+    }
+
+    #[test]
+    fn whole_output_code_fences_are_removed() {
+        for fence in ["```json", "```", "```JSON"] {
+            let output = format!("{fence}\n{DOCUMENT}\n```");
+            assert_eq!(unwrap_document(&output), DOCUMENT, "{fence}");
+        }
+    }
+
+    #[test]
+    fn anything_else_is_left_for_validation_to_reject() {
+        let different = format!("Here is something else entirely.\n{DOCUMENT}");
+        assert_eq!(
+            unwrap_document(&different),
+            different,
+            "text not in the prose is never dropped"
+        );
+        let trailing = format!("{DOCUMENT}\nDone!");
+        assert_eq!(unwrap_document(&trailing), trailing);
+        assert_eq!(unwrap_document("not json at all"), "not json at all");
+        let fenced_text = "```python\nprint(1)\n```";
+        assert_eq!(unwrap_document(fenced_text), fenced_text);
+        assert_eq!(unwrap_document(DOCUMENT), DOCUMENT);
+    }
 }

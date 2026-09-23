@@ -22,7 +22,7 @@ use serde_json::Value;
 pub use prose::ProseExtractor;
 pub use protocol::{
     ACTIVE_THRESHOLD, classification_from_decisions, decisions_body, jev_request_body,
-    jev_system_message, request_body, system_message, user_message,
+    jev_system_message, request_body, system_message, unwrap_document, user_message,
 };
 pub use sse::SseDecoder;
 
@@ -219,6 +219,7 @@ impl InferenceProvider for OpenAiCompatible {
             }
         })
         .await
+        .map(|output| unwrap_document(&output))
         .map_err(failed)
     }
 }
