@@ -13,6 +13,7 @@ use super::StoreError;
 pub(crate) const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0001_initial.sql"),
     include_str!("migrations/0002_run_defaults.sql"),
+    include_str!("migrations/0003_conversations.sql"),
 ];
 
 /// The schema version this build creates and understands.
@@ -76,6 +77,7 @@ mod tests {
             names,
             [
                 "active_context",
+                "conversations",
                 "dag_edges",
                 "dag_nodes",
                 "events",
@@ -84,6 +86,43 @@ mod tests {
                 "runs"
             ]
         );
+    }
+
+    #[test]
+    fn a_version_2_database_groups_its_runs_into_one_conversation_per_project() {
+        let mut conn = fresh();
+        migrate(&mut conn, &MIGRATIONS[..2]).unwrap();
+        conn.execute_batch(
+            r#"INSERT INTO projects (id, name, created_at) VALUES ('proj_1', 'a', 't0'), ('proj_2', 'b', 't0');
+               INSERT INTO runs (id, project_id, provider_id, model_id, system_prompt, status, started_at, completed_at)
+                 VALUES ('run_1', 'proj_1', 'fake', 'fake-echo', '', 'completed', 't1', 't2'),
+                        ('run_2', 'proj_1', 'fake', 'fake-echo', '', 'completed', 't3', 't4');
+               INSERT INTO events VALUES ('evt_1', 'run_1', 1, 'message.recorded',
+                 json_object('node_id', 'node_1', 'text', '  Plan the' || char(10) || ' storage layer  '),
+                 't1');"#,
+        )
+        .unwrap();
+
+        migrate(&mut conn, MIGRATIONS).unwrap();
+
+        let conversations: Vec<(String, String, String, String)> = conn
+            .prepare("SELECT id, project_id, title, updated_at FROM conversations")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(conversations.len(), 1, "projects without runs get none");
+        let (id, project, title, updated_at) = &conversations[0];
+        assert!(id.starts_with("conv_") && id.len() == 37, "{id}");
+        assert_eq!((project.as_str(), updated_at.as_str()), ("proj_1", "t3"));
+        assert_eq!(*title, format!("Plan the{} storage layer", char::from(10)));
+        let unassigned: i64 = conn
+            .query_row("SELECT count(*) FROM runs WHERE conversation_id IS NOT ?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(unassigned, 0);
     }
 
     #[test]

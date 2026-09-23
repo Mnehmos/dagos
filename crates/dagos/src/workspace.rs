@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Duration;
 
-use dagos_core::domain::{IrTool, ModelId, Project, ProviderId, RunConfig};
+use dagos_core::domain::{IrTool, ModelId, Project, ProjectId, ProviderId, RunConfig};
 use dagos_core::provider::FakeProvider;
 use dagos_core::runtime::Runtime;
 use dagos_core::store::{EventListener, Store, StoreError};
@@ -173,9 +173,29 @@ impl Workspace {
         Ok(self)
     }
 
-    /// The configuration new runs use: the project's defaults, or the built-in default.
+    /// The configuration new runs of the default project use.
     pub fn run_config(&self) -> Result<RunConfig, StoreError> {
-        Ok(self.runtime().defaults(&self.project.id)?.unwrap_or_else(default_run_config))
+        self.run_config_for(&self.project.id)
+    }
+
+    /// The configuration new runs of `project_id` use: its defaults, or the built-in default.
+    pub fn run_config_for(&self, project_id: &ProjectId) -> Result<RunConfig, StoreError> {
+        Ok(self.runtime().defaults(project_id)?.unwrap_or_else(default_run_config))
+    }
+
+    /// Creates a project whose runs start with `defaults`.
+    pub fn create_project(&self, name: &str, defaults: &RunConfig) -> Result<Project, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("the project name is empty".into());
+        }
+        self.store
+            .transaction(|tx| {
+                let project = tx.create_project(name)?;
+                tx.set_run_defaults(&project.id, defaults)?;
+                Ok::<_, StoreError>(project)
+            })
+            .map_err(|error| error.to_string())
     }
 }
 

@@ -124,6 +124,10 @@ define_id!(
     ProjectId, "proj", "project"
 );
 define_id!(
+    /// Identifies a conversation: a thread of runs inside a project.
+    ConversationId, "conv", "conversation"
+);
+define_id!(
     /// Identifies a durable DAG node.
     NodeId, "node", "node"
 );

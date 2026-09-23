@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use super::dag::closed_enum;
-use super::ids::{ProjectId, RunId};
+use super::ids::{ConversationId, ProjectId, RunId};
 use super::time::Timestamp;
 
 /// A value that is not a valid provider or model identifier.
@@ -154,6 +154,7 @@ pub struct RunConfig {
 pub struct Run {
     pub id: RunId,
     pub project_id: ProjectId,
+    pub conversation_id: ConversationId,
     pub provider_id: ProviderId,
     pub model_id: ModelId,
     pub system_prompt: String,
@@ -221,6 +222,7 @@ mod tests {
         let run = Run {
             id: RunId::parse("run_000001").unwrap(),
             project_id: ProjectId::parse("proj_000001").unwrap(),
+            conversation_id: ConversationId::parse("conv_000001").unwrap(),
             provider_id: ProviderId::parse("fake").unwrap(),
             model_id: ModelId::parse("fake-echo").unwrap(),
             system_prompt: "Be brief.".into(),
@@ -229,7 +231,7 @@ mod tests {
             completed_at: Some(Timestamp::parse("2026-09-22T19:19:35.000Z").unwrap()),
             error_code: Some(ErrorCode::ResponseInvalid),
         };
-        let expected = r#"{"id":"run_000001","project_id":"proj_000001","provider_id":"fake","model_id":"fake-echo","system_prompt":"Be brief.","status":"failed","started_at":"2026-09-22T19:19:34.123Z","completed_at":"2026-09-22T19:19:35.000Z","error_code":"response_invalid"}"#;
+        let expected = r#"{"id":"run_000001","project_id":"proj_000001","conversation_id":"conv_000001","provider_id":"fake","model_id":"fake-echo","system_prompt":"Be brief.","status":"failed","started_at":"2026-09-22T19:19:34.123Z","completed_at":"2026-09-22T19:19:35.000Z","error_code":"response_invalid"}"#;
         assert_eq!(serde_json::to_string(&run).unwrap(), expected);
         assert_eq!(serde_json::from_str::<Run>(expected).unwrap(), run);
     }

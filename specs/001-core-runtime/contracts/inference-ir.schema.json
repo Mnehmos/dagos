@@ -46,7 +46,7 @@
       }
     },
     "recent_events": {
-      "description": "How the project's most recent earlier runs ended, oldest first. Failures carry their error code and message; completed runs carry the prose they presented.",
+      "description": "The conversation so far: this conversation's most recent earlier turns, oldest first, as an appended array. Each turn carries the user's message (request); completed turns carry the prose they presented, failed turns their error code and message.",
       "type": "array",
       "items": {
         "type": "object",
@@ -54,6 +54,10 @@
         "properties": {
           "run_id": {"type": "string", "pattern": "^run_[0-9a-z]{1,64}$"},
           "type": {"enum": ["run.completed", "run.failed"]},
+          "request": {
+            "description": "The user's message in that turn.",
+            "type": "string"
+          },
           "error_code": {"type": "string"},
           "message": {"type": "string"},
           "prose": {

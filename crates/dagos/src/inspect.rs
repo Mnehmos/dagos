@@ -5,9 +5,9 @@
 //! exactly as the DAGOS contracts describe. Nothing here mutates the store.
 
 use dagos_core::domain::{
-    ContextClassification, ContextMember, DagEdge, DagNode, EdgeId, Event, EventData, InferenceIr,
-    InferenceResponse, JevRequest, ModelId, NodeId, Project, ProjectId, ProviderId, Run, RunConfig,
-    RunId,
+    ContextClassification, ContextMember, Conversation, ConversationId, DagEdge, DagNode, EdgeId,
+    Event, EventData, InferenceIr, InferenceResponse, JevRequest, ModelId, NodeId, Project,
+    ProjectId, ProviderId, Run, RunConfig, RunId, RunStatus,
 };
 use dagos_core::store::{Store, StoreError};
 use dagos_mcp::Capabilities;
@@ -30,6 +30,41 @@ pub struct Overview {
     pub dag: DagView,
     /// Every run, oldest first.
     pub runs: Vec<RunSummary>,
+    /// The project's conversations, most recently active first (archived ones included).
+    pub conversations: Vec<Conversation>,
+}
+
+/// A project in the project switcher.
+#[derive(Debug, Serialize)]
+pub struct ProjectSummary {
+    pub project: Project,
+    pub conversations: usize,
+    pub nodes: usize,
+}
+
+/// A conversation as a chat: every run in order, each shown as a turn.
+#[derive(Debug, Serialize)]
+pub struct ConversationView {
+    pub conversation: Conversation,
+    pub turns: Vec<TurnView>,
+}
+
+/// One run as a chat turn: the user's message and what came back.
+#[derive(Debug, Serialize)]
+pub struct TurnView {
+    pub run: Run,
+    pub message: Option<String>,
+    /// The validated reply's prose, or what has streamed so far while the run is running.
+    pub prose: String,
+    pub failure: Option<FailureView>,
+    /// How many durable nodes were in the active context the model saw.
+    pub context_size: usize,
+    /// The Jev that classified, e.g. `openrouter-jev:<model>` or `fake-jev`.
+    pub jev_id: Option<String>,
+    /// Whether the offline fallback classified because the model Jev could not.
+    pub jev_fallback: bool,
+    pub emitted_nodes: usize,
+    pub emitted_edges: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -112,10 +147,37 @@ pub struct RunDetail {
     pub events: Vec<Event>,
 }
 
-/// Builds the overview of `workspace`.
+/// Builds the overview of the workspace's default project.
 pub fn overview(workspace: &Workspace) -> Result<Overview, StoreError> {
-    let project_id = &workspace.project.id;
-    let (dag, runs) = workspace.store.transaction(|tx| {
+    project_overview(workspace, &workspace.project.id)?.ok_or_else(|| StoreError::NotFound {
+        kind: "project",
+        id: workspace.project.id.to_string(),
+    })
+}
+
+/// Every project of the workspace, oldest first.
+pub fn projects(store: &Store) -> Result<Vec<ProjectSummary>, StoreError> {
+    store.transaction(|tx| {
+        tx.projects()?
+            .into_iter()
+            .map(|project| {
+                let conversations = tx.conversations(&project.id)?.len();
+                let nodes = tx.nodes(&project.id)?.len();
+                Ok(ProjectSummary { project, conversations, nodes })
+            })
+            .collect()
+    })
+}
+
+/// Builds the overview of `project_id`; `None` if there is no such project.
+pub fn project_overview(
+    workspace: &Workspace,
+    project_id: &ProjectId,
+) -> Result<Option<Overview>, StoreError> {
+    let Some(project) = workspace.store.transaction(|tx| tx.project(project_id))? else {
+        return Ok(None);
+    };
+    let (dag, runs, conversations) = workspace.store.transaction(|tx| {
         let dag = DagView { nodes: tx.nodes(project_id)?, edges: tx.edges(project_id)? };
         let mut runs = Vec::new();
         for run in tx.runs(project_id)? {
@@ -125,9 +187,9 @@ pub fn overview(workspace: &Workspace) -> Result<Overview, StoreError> {
             });
             runs.push(RunSummary { run, message });
         }
-        Ok::<_, StoreError>((dag, runs))
+        Ok::<_, StoreError>((dag, runs, tx.conversations(project_id)?))
     })?;
-    let run_defaults = workspace.run_config()?;
+    let run_defaults = workspace.run_config_for(project_id)?;
     let runtime = workspace.runtime();
     let providers = runtime
         .providers()
@@ -136,15 +198,92 @@ pub fn overview(workspace: &Workspace) -> Result<Overview, StoreError> {
             suggested_models: provider.suggested_models(),
         })
         .collect();
-    Ok(Overview {
-        project: workspace.project.clone(),
+    Ok(Some(Overview {
+        project,
         run_defaults,
         providers,
         jev: workspace.runtime().jev().id().to_owned(),
         capabilities: workspace.capabilities.clone(),
         dag,
         runs,
+        conversations,
+    }))
+}
+
+/// A conversation as a chat; `None` if there is no such conversation.
+pub fn conversation(
+    store: &Store,
+    id: &ConversationId,
+) -> Result<Option<ConversationView>, StoreError> {
+    store.transaction(|tx| {
+        let Some(conversation) = tx.conversation(id)? else { return Ok(None) };
+        let mut turns = Vec::new();
+        for run in tx.conversation_runs(id)? {
+            let events = tx.events(&run.id)?;
+            let context_size = tx.context(&run.id)?.len();
+            turns.push(turn(run, &events, context_size));
+        }
+        Ok(Some(ConversationView { conversation, turns }))
     })
+}
+
+fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
+    let mut view = TurnView {
+        run,
+        message: None,
+        prose: String::new(),
+        failure: None,
+        context_size,
+        jev_id: None,
+        jev_fallback: false,
+        emitted_nodes: 0,
+        emitted_edges: 0,
+    };
+    let mut streamed = String::new();
+    let mut validated = None;
+    for event in events {
+        match &event.data {
+            EventData::MessageRecorded { text, .. } => view.message = Some(text.clone()),
+            EventData::JevRequested { jev_id, .. } => view.jev_id = Some(jev_id.clone()),
+            EventData::JevFallback { .. } => view.jev_fallback = true,
+            EventData::InferenceDelta { text } => streamed.push_str(text),
+            EventData::ResponseValidated { response } => {
+                validated = Some(response.presentation.prose.clone());
+            }
+            EventData::DagNodeCreated { .. } => view.emitted_nodes += 1,
+            EventData::DagEdgeCreated { .. } => view.emitted_edges += 1,
+            _ => {}
+        }
+    }
+    view.prose = validated.unwrap_or(streamed);
+    if view.run.status == RunStatus::Failed {
+        view.failure = failure(events);
+    }
+    view
+}
+
+/// Why a failed run stopped: its `run.failed` event and the rejection that explains it, if any.
+fn failure(events: &[Event]) -> Option<FailureView> {
+    let mut rejection: Option<(&'static str, String)> = None;
+    for event in events {
+        match &event.data {
+            EventData::JevRejected { reason, .. } => rejection = Some(("jev", reason.clone())),
+            EventData::JevFallback { .. } => rejection = None,
+            EventData::ResponseRejected { reason } => {
+                rejection = Some(("response", reason.clone()));
+            }
+            EventData::RunFailed { error_code, message } => {
+                return Some(FailureView {
+                    error_code: error_code.to_string(),
+                    message: message.clone(),
+                    rejected_stage: rejection.as_ref().map(|(stage, _)| *stage),
+                    rejected_reason: rejection.map(|(_, reason)| reason),
+                });
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Resolves `reference` (a run ID or `latest`) to a run of `project_id`.

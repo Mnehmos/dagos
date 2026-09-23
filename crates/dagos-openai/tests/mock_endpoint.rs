@@ -397,6 +397,7 @@ fn decisions_models_and_their_endpoint_are_recognised() {
 #[tokio::test]
 async fn typesafe_jev_classifies_through_the_decisions_api() {
     let (store, project, [keep, drop], config) = jev_setup();
+    let drop = &drop;
     let response = json!({
         "id": "gen-dec-1", "model": "typesafe/jev-1.13", "provider": "TypeSafe",
         "answers": {
@@ -429,6 +430,9 @@ async fn typesafe_jev_classifies_through_the_decisions_api() {
     assert_eq!(question["instructions"]["node"]["node_id"], keep.as_str());
     assert!(question["criteria"]["true"].is_string() && question["criteria"]["false"].is_string());
     assert_eq!(captured.body["questions"].as_object().unwrap().len(), 2);
+    assert_eq!(question["instructions"]["recency"], 2, "the oldest of two candidates");
+    assert_eq!(captured.body["questions"][drop.as_str()]["instructions"]["recency"], 1);
+    assert_eq!(captured.body["state"]["latest_messages"], json!([]), "no user turns among them");
 }
 
 #[tokio::test]

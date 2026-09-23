@@ -18,9 +18,9 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
-use axum::routing::{get, post, put};
-use dagos_core::domain::{Event, ModelId, ProviderId, RunId};
-use dagos_core::runtime::RuntimeError;
+use axum::routing::{get, patch, post, put};
+use dagos_core::domain::{ConversationId, Event, ModelId, ProjectId, ProviderId, RunConfig, RunId};
+use dagos_core::runtime::{RuntimeError, Thread};
 use dagos_core::store::{EventListener, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -30,7 +30,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
-use crate::inspect::{self, Overview, RunDetail};
+use crate::inspect::{self, ConversationView, Overview, RunDetail};
 use crate::keys::KeyStore;
 use crate::providers::{
     self, JevEntry, Origin, ProviderEntry, ProviderKind, ProviderSetting, Settings,
@@ -92,6 +92,11 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/config", put(update_config))
         .route("/api/recover", post(recover))
         .route("/api/stream", get(stream))
+        .route("/api/projects", get(list_projects).post(create_project))
+        .route("/api/projects/{project}", patch(rename_project))
+        .route("/api/projects/{project}/overview", get(project_overview))
+        .route("/api/projects/{project}/config", put(update_project_config))
+        .route("/api/conversations/{conversation}", get(conversation).patch(update_conversation))
         .route("/api/settings", get(settings))
         .route("/api/settings/providers/{id}", put(save_provider).delete(remove_provider))
         .route("/api/settings/providers/{id}/key", put(save_key).delete(remove_key))
@@ -206,8 +211,12 @@ async fn run(
 ) -> Result<Json<RunDetail>, ApiError> {
     let workspace = &state.workspace;
     let not_found = || ApiError::NotFound(format!("run `{reference}` not found"));
-    let id = inspect::resolve_run(&workspace.store, &workspace.project.id, &reference)?
-        .ok_or_else(not_found)?;
+    // A run ID names a run in any project; `latest` means the default project's latest run.
+    let id = match RunId::parse(reference.as_str()) {
+        Ok(id) => id,
+        Err(_) => inspect::resolve_run(&workspace.store, &workspace.project.id, &reference)?
+            .ok_or_else(not_found)?,
+    };
     Ok(Json(inspect::run_detail(&workspace.store, &id)?.ok_or_else(not_found)?))
 }
 
@@ -216,6 +225,13 @@ async fn run(
 #[serde(deny_unknown_fields)]
 struct StartRequest {
     message: String,
+    /// Continue this conversation.
+    conversation_id: Option<String>,
+    /// Otherwise run in this project (default: the workspace's default project)...
+    project_id: Option<String>,
+    /// ...in a new conversation titled after the message, or else its latest conversation.
+    #[serde(default)]
+    new_conversation: bool,
     provider_id: Option<String>,
     model_id: Option<String>,
     system_prompt: Option<String>,
@@ -229,7 +245,26 @@ async fn start_run(
     if message.is_empty() {
         return Err(ApiError::BadRequest("the message is empty".into()));
     }
-    let mut config = state.workspace.run_config()?;
+    let conversation_id = request
+        .conversation_id
+        .map(|id| ConversationId::parse(id).map_err(ApiError::bad_request))
+        .transpose()?;
+    let project_id = match (&conversation_id, request.project_id) {
+        (Some(id), _) => {
+            let conversation = state.workspace.store.transaction(|tx| tx.conversation(id))?;
+            conversation
+                .ok_or_else(|| ApiError::NotFound(format!("conversation `{id}` not found")))?
+                .project_id
+        }
+        (None, Some(id)) => existing_project(&state, &id)?,
+        (None, None) => state.workspace.project.id.clone(),
+    };
+    let thread = match &conversation_id {
+        Some(id) => Thread::Conversation(id),
+        None if request.new_conversation => Thread::New(&project_id),
+        None => Thread::Latest(&project_id),
+    };
+    let mut config = state.workspace.run_config_for(&project_id)?;
     if let Some(provider) = request.provider_id {
         config.provider_id = ProviderId::parse(provider).map_err(ApiError::bad_request)?;
     }
@@ -240,7 +275,7 @@ async fn start_run(
         config.system_prompt = prompt;
     }
     let runtime = state.workspace.runtime();
-    let started = runtime.start(&state.workspace.project.id, message, &config)?;
+    let started = runtime.start_in(thread, message, &config)?;
     let run = started.run.clone();
     state.executing().insert(run.id.clone());
     let task_state = state.clone();
@@ -267,13 +302,130 @@ async fn update_config(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ConfigRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = dagos_core::domain::RunConfig {
+    let project = state.workspace.project.id.clone();
+    save_config(&state, &project, request)
+}
+
+/// `PUT /api/projects/{project}/config`: that project's configuration for subsequent runs.
+async fn update_project_config(
+    State(state): State<Arc<AppState>>,
+    Path(project): Path<String>,
+    Json(request): Json<ConfigRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let project = existing_project(&state, &project)?;
+    save_config(&state, &project, request)
+}
+
+fn save_config(
+    state: &AppState,
+    project: &ProjectId,
+    request: ConfigRequest,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = RunConfig {
         provider_id: ProviderId::parse(request.provider_id).map_err(ApiError::bad_request)?,
         model_id: ModelId::parse(request.model_id).map_err(ApiError::bad_request)?,
         system_prompt: request.system_prompt,
     };
-    state.workspace.runtime().set_defaults(&state.workspace.project.id, &config)?;
-    Ok(Json(json!({"run_defaults": state.workspace.run_config()?})))
+    state.workspace.runtime().set_defaults(project, &config)?;
+    Ok(Json(json!({"run_defaults": state.workspace.run_config_for(project)?})))
+}
+
+/// The ID of an existing project, or a 404.
+fn existing_project(state: &AppState, id: &str) -> Result<ProjectId, ApiError> {
+    let id = ProjectId::parse(id).map_err(ApiError::bad_request)?;
+    match state.workspace.store.transaction(|tx| tx.project(&id))? {
+        Some(project) => Ok(project.id),
+        None => Err(ApiError::NotFound(format!("project `{id}` not found"))),
+    }
+}
+
+/// `GET /api/projects`: every project, oldest first.
+async fn list_projects(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let projects = inspect::projects(&state.workspace.store)?;
+    Ok(Json(json!({"projects": projects, "default": state.workspace.project.id})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectRequest {
+    name: String,
+}
+
+/// `POST /api/projects`: a new project (its own DAG), starting with the default project's run
+/// configuration.
+async fn create_project(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ProjectRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let defaults = state.workspace.run_config()?;
+    let project =
+        state.workspace.create_project(&request.name, &defaults).map_err(ApiError::BadRequest)?;
+    Ok((StatusCode::CREATED, Json(json!({"project": project}))))
+}
+
+/// `PATCH /api/projects/{project}`: renames a project.
+async fn rename_project(
+    State(state): State<Arc<AppState>>,
+    Path(project): Path<String>,
+    Json(request): Json<ProjectRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = existing_project(&state, &project)?;
+    let project = state.workspace.store.transaction(|tx| tx.rename_project(&id, &request.name))?;
+    Ok(Json(json!({"project": project})))
+}
+
+/// `GET /api/projects/{project}/overview`.
+async fn project_overview(
+    State(state): State<Arc<AppState>>,
+    Path(project): Path<String>,
+) -> Result<Json<ServerOverview>, ApiError> {
+    let id = existing_project(&state, &project)?;
+    let overview = inspect::project_overview(&state.workspace, &id)?
+        .ok_or_else(|| ApiError::NotFound(format!("project `{id}` not found")))?;
+    let executing = state.executing().iter().cloned().collect();
+    Ok(Json(ServerOverview { overview, executing }))
+}
+
+/// `GET /api/conversations/{conversation}`: the conversation as chat turns.
+async fn conversation(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<ConversationView>, ApiError> {
+    let id = ConversationId::parse(id).map_err(ApiError::bad_request)?;
+    inspect::conversation(&state.workspace.store, &id)?
+        .map(Json)
+        .ok_or_else(|| ApiError::NotFound(format!("conversation `{id}` not found")))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConversationRequest {
+    title: Option<String>,
+    archived: Option<bool>,
+}
+
+/// `PATCH /api/conversations/{conversation}`: renames, archives, or restores a conversation.
+async fn update_conversation(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<ConversationRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = ConversationId::parse(id).map_err(ApiError::bad_request)?;
+    let conversation = state.workspace.store.transaction(|tx| {
+        let mut conversation = tx
+            .conversation(&id)?
+            .ok_or_else(|| StoreError::NotFound { kind: "conversation", id: id.to_string() })?;
+        if let Some(title) = &request.title {
+            conversation = tx.rename_conversation(&id, title)?;
+        }
+        if let Some(archived) = request.archived {
+            conversation = tx.set_conversation_archived(&id, archived)?;
+        }
+        Ok::<_, StoreError>(conversation)
+    })?;
+    Ok(Json(json!({"conversation": conversation})))
 }
 
 /// `POST /api/recover`: fails runs left `running` by a process that is gone.
@@ -495,6 +647,8 @@ impl From<StoreError> for ApiError {
     fn from(error: StoreError) -> Self {
         match error {
             StoreError::RunInProgress { .. } => ApiError::Conflict(error.to_string()),
+            StoreError::Invalid(_) => ApiError::BadRequest(error.to_string()),
+            StoreError::NotFound { .. } => ApiError::NotFound(error.to_string()),
             other => ApiError::Internal(other.to_string()),
         }
     }

@@ -8,8 +8,8 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use crate::domain::{
-    Classification, ContextSource, EdgeId, EdgeType, ErrorCode, EventId, ModelId, NodeId, NodeType,
-    ProjectId, ProviderId, RunId, RunStatus, Timestamp,
+    Classification, ContextSource, ConversationId, EdgeId, EdgeType, ErrorCode, EventId, ModelId,
+    NodeId, NodeType, ProjectId, ProviderId, RunId, RunStatus, Timestamp,
 };
 
 macro_rules! text_column {
@@ -31,6 +31,7 @@ macro_rules! text_column {
 
 text_column! {
     ProjectId => |text| ProjectId::parse(text);
+    ConversationId => |text| ConversationId::parse(text);
     NodeId => |text| NodeId::parse(text);
     EdgeId => |text| EdgeId::parse(text);
     RunId => |text| RunId::parse(text);

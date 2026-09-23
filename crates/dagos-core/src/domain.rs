@@ -27,11 +27,12 @@ pub use conversation::{ConversationTurn, Role};
 pub use dag::{DagEdge, DagNode, EdgeType, NodeType, Payload, UnknownVariant};
 pub use event::{Event, EventData};
 pub use ids::{
-    EdgeId, EventId, IdError, IdGenerator, NodeId, ProjectId, RandomIds, RunId, SequentialIds,
+    ConversationId, EdgeId, EventId, IdError, IdGenerator, NodeId, ProjectId, RandomIds, RunId,
+    SequentialIds,
 };
 pub use ir::{InferenceIr, IrContextItem, IrEvent, IrEventType, IrRelation, IrTask, IrTool};
 pub use jev::{ContextClassification, JevCandidate, JevEdge, JevRequest, NodeClassification};
-pub use project::Project;
+pub use project::{Conversation, Project};
 pub use response::{
     Emission, EmissionRef, EmissionRefError, Endpoint, InferenceResponse, Presentation, ToolCall,
 };

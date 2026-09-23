@@ -13,8 +13,8 @@ use crate::domain::{
 };
 use crate::store::{StoreError, Tx};
 
-/// How many of the project's most recent earlier runs IR reports in `recent_events`.
-pub const RECENT_RUN_OUTCOMES: usize = 3;
+/// How many of the conversation's most recent earlier turns IR carries in `recent_events`.
+pub const RECENT_RUN_OUTCOMES: usize = 8;
 
 /// Why IR could not be compiled.
 #[derive(Debug, thiserror::Error)]
@@ -77,7 +77,8 @@ pub fn compile(
     Ok(ir)
 }
 
-/// How the project's most recent runs before `run_id` ended, oldest first.
+/// The conversation's most recent turns before `run_id`, oldest first: each turn's message and
+/// how it ended.
 fn recent_run_outcomes(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrEvent>, StoreError> {
     let mut earlier = Vec::new();
     let mut cursor = run_id.clone();
@@ -91,10 +92,15 @@ fn recent_run_outcomes(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrEvent>, Stor
     let mut outcomes = Vec::with_capacity(earlier.len());
     for run in earlier {
         let events = tx.events(&run.id)?;
+        let request = events.iter().find_map(|event| match &event.data {
+            EventData::MessageRecorded { text, .. } => Some(text.clone()),
+            _ => None,
+        });
         let outcome = match run.status {
             RunStatus::Completed => IrEvent {
                 run_id: run.id,
                 event_type: IrEventType::RunCompleted,
+                request,
                 error_code: None,
                 message: None,
                 prose: events.into_iter().rev().find_map(|event| match event.data {
@@ -105,6 +111,7 @@ fn recent_run_outcomes(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrEvent>, Stor
             RunStatus::Failed => IrEvent {
                 run_id: run.id,
                 event_type: IrEventType::RunFailed,
+                request,
                 error_code: Some(run.error_code.unwrap_or(ErrorCode::Internal)),
                 message: events.into_iter().rev().find_map(|event| match event.data {
                     EventData::RunFailed { message, .. } => Some(message),

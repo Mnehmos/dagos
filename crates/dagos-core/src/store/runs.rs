@@ -7,10 +7,12 @@
 use rusqlite::{OptionalExtension, Row, params};
 
 use super::{StoreError, Tx};
-use crate::domain::{ErrorCode, EventData, ProjectId, Run, RunConfig, RunId, RunStatus, Timestamp};
+use crate::domain::{
+    ConversationId, ErrorCode, EventData, ProjectId, Run, RunConfig, RunId, RunStatus, Timestamp,
+};
 
 const RUN_COLUMNS: &str = "id, project_id, provider_id, model_id, system_prompt, status, \
-                           started_at, completed_at, error_code";
+                           started_at, completed_at, error_code, conversation_id";
 
 fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Run> {
     Ok(Run {
@@ -23,26 +25,46 @@ fn run_from_row(row: &Row<'_>) -> rusqlite::Result<Run> {
         started_at: row.get(6)?,
         completed_at: row.get(7)?,
         error_code: row.get(8)?,
+        conversation_id: row.get(9)?,
     })
 }
 
 impl Tx<'_> {
-    /// Starts a run in `project_id` with `config`, recording `run.started`.
-    ///
-    /// v0.1 runs one pipeline at a time per project: fails with [`StoreError::RunInProgress`]
-    /// while another run is still running.
+    /// Starts a run in the project's latest conversation (a new one if it has none) with
+    /// `config`, recording `run.started`. See [`Tx::create_run_in`].
     pub fn create_run(
         &self,
         project_id: &ProjectId,
         config: &RunConfig,
     ) -> Result<Run, StoreError> {
         self.require_project(project_id)?;
+        let conversation = match self.latest_conversation(project_id)? {
+            Some(conversation) => conversation,
+            None => self.create_conversation(project_id, "New conversation")?,
+        };
+        self.create_run_in(&conversation.id, config)
+    }
+
+    /// Starts a run in `conversation_id` with `config`, recording `run.started`, and marks the
+    /// conversation active (restoring it if it was archived).
+    ///
+    /// v0.1 runs one pipeline at a time per project: fails with [`StoreError::RunInProgress`]
+    /// while another run of the project is still running.
+    pub fn create_run_in(
+        &self,
+        conversation_id: &ConversationId,
+        config: &RunConfig,
+    ) -> Result<Run, StoreError> {
+        let conversation = self.require_conversation(conversation_id)?;
+        let project_id = &conversation.project_id;
         if let Some(running) = self.running_run(project_id)? {
             return Err(StoreError::RunInProgress { running: running.id });
         }
+        self.touch_conversation(conversation_id)?;
         let run = Run {
             id: RunId::generate(self.ids),
             project_id: project_id.clone(),
+            conversation_id: conversation_id.clone(),
             provider_id: config.provider_id.clone(),
             model_id: config.model_id.clone(),
             system_prompt: config.system_prompt.clone(),
@@ -53,7 +75,7 @@ impl Tx<'_> {
         };
         self.conn.execute(
             &format!(
-                "INSERT INTO runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
+                "INSERT INTO runs ({RUN_COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
             ),
             params![
                 run.id,
@@ -64,7 +86,8 @@ impl Tx<'_> {
                 run.status,
                 run.started_at,
                 run.completed_at,
-                run.error_code
+                run.error_code,
+                run.conversation_id
             ],
         )?;
         self.append_event(
@@ -94,7 +117,20 @@ impl Tx<'_> {
         Ok(runs)
     }
 
-    /// The run of the same project that started immediately before `id`, if any.
+    /// Every run of the conversation, oldest first.
+    pub fn conversation_runs(
+        &self,
+        conversation_id: &ConversationId,
+    ) -> Result<Vec<Run>, StoreError> {
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {RUN_COLUMNS} FROM runs WHERE conversation_id = ?1 ORDER BY started_at, id"
+        ))?;
+        let runs =
+            statement.query_map([conversation_id], run_from_row)?.collect::<Result<_, _>>()?;
+        Ok(runs)
+    }
+
+    /// The run of the same conversation that started immediately before `id`, if any.
     pub fn previous_run(&self, id: &RunId) -> Result<Option<Run>, StoreError> {
         let run = self.run(id)?.ok_or_else(|| Self::not_found("run", id))?;
         Ok(self
@@ -102,10 +138,10 @@ impl Tx<'_> {
             .query_row(
                 &format!(
                     "SELECT {RUN_COLUMNS} FROM runs
-                     WHERE project_id = ?1 AND (started_at, id) < (?2, ?3)
+                     WHERE conversation_id = ?1 AND (started_at, id) < (?2, ?3)
                      ORDER BY started_at DESC, id DESC LIMIT 1"
                 ),
-                params![run.project_id, run.started_at, run.id],
+                params![run.conversation_id, run.started_at, run.id],
                 run_from_row,
             )
             .optional()?)

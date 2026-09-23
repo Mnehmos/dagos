@@ -5,7 +5,7 @@
 //! model receives machine-readable input and must answer with one machine-readable document.
 
 use dagos_core::contracts::Contract;
-use dagos_core::domain::{InferenceIr, JevRequest, ModelId};
+use dagos_core::domain::{InferenceIr, JevRequest, ModelId, NodeType};
 use serde_json::{Value, json};
 
 const PROTOCOL: &str = "\
@@ -14,7 +14,8 @@ You are the inference endpoint of DAGOS, a DAG operating system for coding workf
 The user message is a kiss.inference-ir.v1 JSON document:
 - task.message is the request to answer; task.node_id is its durable node.
 - context lists the durable DAG nodes that are active for this request, with their relations.
-- recent_events says how recent runs ended, including your earlier replies and rejection reasons.
+- recent_events is the conversation so far, oldest first: each earlier turn's request (the user's \
+message) and your reply (prose), or why that turn failed.
 - tools, if present, only describe capabilities; nothing has been executed.
 
 Reply with exactly one JSON object that satisfies kiss.inference-response.v1 and nothing else: no \
@@ -109,19 +110,25 @@ pub const ACTIVE_THRESHOLD: f64 = 0.5;
 /// The Decisions API request for classifying `request` with a decisions model (e.g. TypeSafe's
 /// Jev): one `noul` question per candidate, keyed by node ID, over the request as shared state.
 pub fn decisions_body(model_id: &ModelId, request: &JevRequest) -> Value {
+    let count = request.candidates.len();
     let questions: serde_json::Map<String, Value> = request
         .candidates
         .iter()
-        .map(|candidate| {
+        .enumerate()
+        .map(|(index, candidate)| {
             let question = json!({
                 "type": "noul",
                 "instructions": {
                     "task": "Decide whether this durable project node belongs in the active \
                              context used to answer the user's message in `state.message`.",
                     "node": candidate,
+                    // Candidates are oldest first; 1 is the most recent node before the message.
+                    "recency": count - index,
                 },
                 "criteria": {
-                    "true": "The node is relevant to answering the message and still current.",
+                    "true": "The node is relevant to answering the message and still current, \
+                             or the message refers back to the recent conversation and this node \
+                             is one of its latest turns (low `recency`).",
                     "false": "The node is unrelated to the message, stale, or superseded by a \
                               newer node (see `state.edges`).",
                 },
@@ -132,8 +139,30 @@ pub fn decisions_body(model_id: &ModelId, request: &JevRequest) -> Value {
     json!({
         "model": model_id.as_str(),
         "questions": questions,
-        "state": {"message": request.message, "edges": request.edges},
+        "state": {
+            "message": request.message,
+            "latest_messages": latest_messages(request),
+            "edges": request.edges,
+        },
     })
+}
+
+/// How many of the latest user messages the Decisions state includes for orientation.
+const LATEST_MESSAGES: usize = 4;
+
+/// The most recent user messages among the candidates, oldest first.
+fn latest_messages(request: &JevRequest) -> Vec<&str> {
+    let mut messages: Vec<&str> = request
+        .candidates
+        .iter()
+        .rev()
+        .filter(|candidate| candidate.node_type == NodeType::Conversation)
+        .filter(|candidate| candidate.payload.get("role").and_then(Value::as_str) == Some("user"))
+        .filter_map(|candidate| candidate.payload.get("text").and_then(Value::as_str))
+        .take(LATEST_MESSAGES)
+        .collect();
+    messages.reverse();
+    messages
 }
 
 /// Turns a Decisions API response into a `kiss.jev-context.v1` document: each candidate's `noul`

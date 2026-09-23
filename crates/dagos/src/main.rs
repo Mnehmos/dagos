@@ -9,6 +9,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use dagos_core::domain::{EventData, ModelId, ProviderId, RunConfig, RunStatus};
 use dagos_core::provider::FakeProvider;
+use dagos_core::runtime::Thread;
 use dagos_core::store::EventListener;
 use serde_json::json;
 
@@ -131,6 +132,9 @@ struct RunArgs {
     /// Print the finished run as JSON instead of streaming the reply.
     #[arg(long)]
     json: bool,
+    /// Start a new conversation instead of continuing the latest one.
+    #[arg(long)]
+    new: bool,
 }
 
 impl Selection {
@@ -333,11 +337,12 @@ async fn run(dir: &std::path::Path, args: RunArgs, timeout: Duration) -> Result<
         .with_mcp_capabilities(dir, |warning| eprintln!("warning: {warning}"))
         .await?;
     let config = args.selection.apply(workspace.run_config().map_err(|e| e.to_string())?)?;
-    let run = workspace
-        .runtime()
-        .run(&workspace.project.id, &args.message, &config)
-        .await
-        .map_err(|error| error.to_string())?;
+    let project = &workspace.project.id;
+    let thread = if args.new { Thread::New(project) } else { Thread::Latest(project) };
+    let runtime = workspace.runtime();
+    let started =
+        runtime.start_in(thread, &args.message, &config).map_err(|error| error.to_string())?;
+    let run = runtime.finish(started).await.map_err(|error| error.to_string())?;
 
     let events = workspace.store.transaction(|tx| tx.events(&run.id)).map_err(|e| e.to_string())?;
     let (mut nodes, mut edges, mut prose, mut failure) = (0, 0, None, None);

@@ -19,9 +19,9 @@ use crate::context::{
     validate_classification,
 };
 use crate::domain::{
-    ContextClassification, ConversationTurn, Emission, EmissionRef, Endpoint, ErrorCode, EventData,
-    InferenceIr, IrTool, JevRequest, NodeId, NodeType, ProjectId, ProviderId, Run, RunConfig,
-    RunId,
+    ContextClassification, ConversationId, ConversationTurn, Emission, EmissionRef, Endpoint,
+    ErrorCode, EventData, InferenceIr, IrTool, JevRequest, NodeId, NodeType, ProjectId, ProviderId,
+    Run, RunConfig, RunId,
 };
 use crate::ir::{CompileError, compile};
 use crate::provider::{DeltaSink, InferenceProvider, InferenceRequest};
@@ -51,6 +51,17 @@ pub struct StartedRun {
     pub run: Run,
     task: NodeId,
     message: String,
+}
+
+/// Which conversation a new run belongs to.
+#[derive(Debug, Clone, Copy)]
+pub enum Thread<'a> {
+    /// The project's most recently active conversation, or a new one if it has none.
+    Latest(&'a ProjectId),
+    /// This conversation.
+    Conversation(&'a ConversationId),
+    /// A new conversation in the project, titled after the message.
+    New(&'a ProjectId),
 }
 
 /// Wires the store, Jev, and the registered providers into the DAGOS pipeline.
@@ -178,12 +189,23 @@ impl Runtime {
         self.finish(started).await
     }
 
-    /// Starts a run: records it, records `message` as its task node, and carries context. The
-    /// returned run is `running`; [`Runtime::finish`] executes the rest of the pipeline. Splitting
-    /// the two lets a caller learn the run ID before inference begins.
+    /// Starts a run in the project's latest conversation (see [`Runtime::start_in`]).
     pub fn start(
         &self,
         project_id: &ProjectId,
+        message: &str,
+        config: &RunConfig,
+    ) -> Result<StartedRun, RuntimeError> {
+        self.start_in(Thread::Latest(project_id), message, config)
+    }
+
+    /// Starts a run in `thread`: records it, records `message` as its task node, and carries
+    /// context from the conversation's previous run. The returned run is `running`;
+    /// [`Runtime::finish`] executes the rest of the pipeline. Splitting the two lets a caller
+    /// learn the run ID before inference begins.
+    pub fn start_in(
+        &self,
+        thread: Thread<'_>,
         message: &str,
         config: &RunConfig,
     ) -> Result<StartedRun, RuntimeError> {
@@ -191,9 +213,17 @@ impl Runtime {
             return Err(RuntimeError::UnknownProvider(config.provider_id.clone()));
         }
         let (run, task) = self.store.transaction(|tx| {
-            let run = tx.create_run(project_id, config)?;
+            let conversation_id = match thread {
+                Thread::Conversation(id) => id.clone(),
+                Thread::Latest(project_id) => match tx.latest_conversation(project_id)? {
+                    Some(conversation) => conversation.id,
+                    None => tx.create_conversation(project_id, message)?.id,
+                },
+                Thread::New(project_id) => tx.create_conversation(project_id, message)?.id,
+            };
+            let run = tx.create_run_in(&conversation_id, config)?;
             let turn = ConversationTurn::user(message).to_payload();
-            let task = tx.insert_node(project_id, NodeType::Conversation, turn)?;
+            let task = tx.insert_node(&run.project_id, NodeType::Conversation, turn)?;
             tx.append_event(
                 &run.id,
                 EventData::MessageRecorded { node_id: task.id.clone(), text: message.to_owned() },

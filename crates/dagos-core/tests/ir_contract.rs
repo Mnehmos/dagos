@@ -40,6 +40,7 @@ fn ir(tools: Vec<IrTool>) -> InferenceIr {
             IrEvent {
                 run_id: RunId::parse("run_000001").unwrap(),
                 event_type: IrEventType::RunCompleted,
+                request: Some("Which storage should we use?".into()),
                 error_code: None,
                 message: None,
                 prose: Some("Recorded the storage decision.".into()),
@@ -47,6 +48,7 @@ fn ir(tools: Vec<IrTool>) -> InferenceIr {
             IrEvent {
                 run_id: RunId::parse("run_000002").unwrap(),
                 event_type: IrEventType::RunFailed,
+                request: Some("Add restart tests".into()),
                 error_code: Some(ErrorCode::ResponseInvalid),
                 message: Some("at /emissions/0: \"kind\" is a required property".into()),
                 prose: None,

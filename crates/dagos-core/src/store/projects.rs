@@ -35,6 +35,17 @@ impl Tx<'_> {
             .optional()?)
     }
 
+    /// Renames a project; the name must not be blank.
+    pub fn rename_project(&self, id: &ProjectId, name: &str) -> Result<Project, StoreError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(StoreError::Invalid("the project name is empty"));
+        }
+        self.require_project(id)?;
+        self.conn.execute("UPDATE projects SET name = ?2 WHERE id = ?1", params![id, name])?;
+        Ok(self.project(id)?.expect("project exists after update"))
+    }
+
     /// All projects, oldest first.
     pub fn projects(&self) -> Result<Vec<Project>, StoreError> {
         let mut statement = self

@@ -11,6 +11,7 @@
 //! `migrations/0001_initial.sql`), so they hold even for code that bypasses this API.
 
 mod context;
+mod conversations;
 mod dag;
 mod defaults;
 mod events;
@@ -31,6 +32,7 @@ use crate::domain::{
     SystemClock, Timestamp,
 };
 
+pub use conversations::{MAX_TITLE_CHARS, clean_title};
 pub use migrations::SCHEMA_VERSION;
 
 /// Errors raised by the store.
@@ -46,6 +48,8 @@ pub enum StoreError {
     RunInProgress { running: RunId },
     #[error("run `{id}` already finished with status `{status}`")]
     RunFinished { id: RunId, status: RunStatus },
+    #[error("{0}")]
+    Invalid(&'static str),
     #[error("node `{0}` appears more than once in the active context")]
     DuplicateContextMember(NodeId),
     #[error(transparent)]
