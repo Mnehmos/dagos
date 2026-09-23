@@ -228,6 +228,7 @@ const ui = {
   defaults: null,
   onChange: () => {},
   notify: () => {},
+  saveDefaults: (body) => api.saveConfig(body),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -320,7 +321,7 @@ async function onSubmit(event) {
     case "use": {
       const model = String(data.get("model") ?? "").trim();
       try {
-        await api.saveConfig({ provider_id: provider, model_id: model, system_prompt: ui.defaults?.system_prompt ?? "" });
+        await ui.saveDefaults({ provider_id: provider, model_id: model, system_prompt: ui.defaults?.system_prompt ?? "" });
         ui.defaults = { ...ui.defaults, provider_id: provider, model_id: model };
         await ui.onChange();
         render();
@@ -433,12 +434,13 @@ function bind() {
 
 /**
  * Opens the settings dialog at `section` (a provider ID, `jev`, or `new`). `defaults` are the
- * current run defaults; `onChange` runs after every saved change; `notify(message, {error})`
- * reports outcomes.
+ * current project's run defaults and `saveDefaults(body)` changes them; `onChange` runs after
+ * every saved change; `notify(message, {error})` reports outcomes.
  */
-export async function openSettings({ section = null, defaults, onChange, notify }) {
+export async function openSettings({ section = null, defaults, saveDefaults, onChange, notify }) {
   bind();
   Object.assign(ui, { defaults, onChange, notify });
+  if (saveDefaults) ui.saveDefaults = saveDefaults;
   if (section) ui.selected = section;
   ui.replacing = false;
   const dialog = $("settings");

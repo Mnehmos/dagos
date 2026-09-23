@@ -43,6 +43,28 @@ cargo run -p dagos -- run "Try this" --model fake-malformed
 (`--provider`, `--model`, `--system-prompt`, `--system-prompt-file`); `dagos run` accepts the same
 flags as one-off overrides. Each run records the configuration it actually used.
 
+### The app: projects, chats, and the inspector
+
+```bash
+cargo run -p dagos -- serve     # then open http://127.0.0.1:7420
+```
+
+The app works like a normal chat client, and every message is still a full DAGOS run:
+
+- **Projects** (top-left switcher, `p`) each own one durable DAG and their own provider, model,
+  and system prompt. Create and rename them there.
+- **Chats** (sidebar, `n` for a new one) are conversations inside a project. A chat carries its
+  active context from one turn to the next, and the IR gives the model the chat's recent turns
+  (`recent_events`: each earlier turn's request and reply, oldest first) so it reads like an
+  appended conversation. A new chat starts with an empty context but Jev can still bring in any
+  durable node of the project. Chats are titled after their first message; rename one by clicking
+  its title, and archive it to hide it (its runs stay durable, and a new message restores it).
+- **Chat / Inspect** (`v`) switches between the conversation and the run inspector: each turn's
+  pipeline, active context, Jev output, IR, validated response, and events. Every turn has an
+  **Inspect** link; `j`/`k` move between turns.
+
+From the terminal, `dagos run` continues the latest chat and `dagos run --new` starts a new one.
+
 ### Real providers and API keys
 
 The easiest way is the app: run `dagos serve`, press **⚙** (or `s`), pick **OpenRouter**, **OpenAI**,

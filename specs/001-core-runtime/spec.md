@@ -35,6 +35,7 @@ FR-019 Invalid provider responses fail closed and create an error event.
 FR-020 Core state transitions have automated tests.
 FR-021 A model-backed Jev is optional: when it fails or its output is rejected, the run records why and the offline classifier classifies the same request.
 FR-022 Provider API keys can be managed in the app; saved keys live per user outside the project and never appear in the database, the IR, or API responses.
+FR-023 Runs belong to conversations inside a project: a conversation carries active context between its runs and gives the IR its recent turns (request and reply); all conversations of a project share its durable DAG. Conversations are renamed or archived, never deleted.
 
 ## Acceptance Scenarios
 1. Empty project + user message creates conversation state and a run.
@@ -44,6 +45,7 @@ FR-022 Provider API keys can be managed in the app; saved keys live per user out
 5. Malformed provider output creates an error and no invalid semantic mutation.
 6. A normal run works when MCP is unavailable.
 7. A normal run works when the configured model Jev is unavailable or misbehaves.
+8. A new conversation starts with empty active context yet can draw on the project's durable DAG; a continued conversation carries its context and recent turns.
 
 ## Out of Scope
 Planning agents, autonomous loops, tool orchestration, provider routing, embeddings, vector databases, and complex memory policies.

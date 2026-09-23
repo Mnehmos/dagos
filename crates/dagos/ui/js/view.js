@@ -36,38 +36,6 @@ function time(timestamp) {
     : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-const STATUS_ICON = { completed: "✓", failed: "✕", running: "●" };
-
-// ---------------------------------------------------------------------------------------------
-// Runs list
-
-export function runListHtml(runs, selectedId) {
-  if (!runs.length) {
-    return `<li class="empty-note">No runs yet. Your first message starts one.</li>`;
-  }
-  return runs
-    .map((run) => {
-      const status = run.stale ? "stale" : run.status;
-      const icon = run.stale ? "!" : STATUS_ICON[run.status];
-      const label = run.stale
-        ? "interrupted, no process is running it"
-        : run.status === "failed"
-          ? `failed: ${run.errorCode}`
-          : run.status;
-      const selected = run.id === selectedId;
-      return `<li><button type="button" class="run-item status-${status}${selected ? " selected" : ""}"
-        data-run="${esc(run.id)}"${selected ? ' aria-current="true"' : ""}>
-        <span class="run-status" role="img" aria-label="${esc(label)}">${icon}</span>
-        <span class="run-text">
-          <span class="run-message">${esc(model.excerpt(run.message || "(no message)", 80))}</span>
-          <span class="run-meta">${esc(run.provider)} / ${esc(run.model)} · ${esc(time(run.startedAt))}${
-            run.status === "failed" ? ` · <span class="error-code">${esc(run.errorCode)}</span>` : ""
-          }</span>
-        </span>
-      </button></li>`;
-    })
-    .join("");
-}
 
 // ---------------------------------------------------------------------------------------------
 // Inspector
