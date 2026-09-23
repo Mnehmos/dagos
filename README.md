@@ -56,10 +56,12 @@ The app works like a normal chat client, and every message is still a full DAGOS
 - **Chats** (sidebar, `n` for a new one) are conversations inside a project. A chat carries its
   active context from one turn to the next, and the IR gives the model the chat's recent turns
   (`recent_events`: each earlier turn's request and reply, oldest first) so it reads like an
-  appended conversation. Only the latest 8 turns are sent; nothing is summarized away. When a chat
-  is longer, the model gets the `dagos.recall` tool: it searches every earlier turn of the chat,
-  Jev judges which are relevant (word overlap does without a model Jev), and the relevant turns
-  come back verbatim with cursors to the turns around them. A new chat starts with an empty context but Jev can still bring in any
+  appended conversation. Only the latest 8 turns are sent, and nothing is summarized away: chats
+  organize work for people, but the project remembers everything. With a model Jev (TypeSafe's),
+  every run Jev judges each earlier turn of every chat in the project and the relevant ones are
+  recalled into the IR verbatim; in a long run it also leaves out large earlier tool results the
+  current step does not need (they come back when they matter again). The chat shows "recalled N"
+  and "N results left out" under a reply when that happened. A new chat starts with an empty context but Jev can still bring in any
   durable node of the project. Chats are titled after their first message; rename one by clicking
   its title, and archive it to hide it (its runs stay durable, and a new message restores it).
 - **Chat / Inspect** (`v`) switches between the conversation and the run inspector: each turn's

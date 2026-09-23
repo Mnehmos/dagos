@@ -9,14 +9,25 @@ use std::collections::BTreeSet;
 use crate::contracts::{Contract, ContractViolation};
 use crate::domain::{
     ConversationTurn, ErrorCode, EventData, InferenceIr, InferenceIrSchema, IrContextItem, IrEvent,
-    IrEventType, IrRelation, IrTask, IrTool, IrToolResult, IrToolStatus, NodeId, NodeType, Role,
-    RunId, RunStatus,
+    IrEventType, IrRecalledTurn, IrRelation, IrTask, IrTool, IrToolResult, IrToolStatus, NodeId,
+    NodeType, Role, RunId, RunStatus,
 };
 use crate::store::{StoreError, Tx};
 
 /// How many of the conversation's most recent earlier turns IR carries in `recent_events` by
 /// default.
 pub const RECENT_RUN_OUTCOMES: usize = 8;
+
+/// What Jev decided about history for one IR: how many recent turns it carries, which earlier
+/// turns it recalls, and which of the run's tool results it leaves out.
+#[derive(Debug, Clone, Copy)]
+pub struct IrHistory<'a> {
+    /// How many of the conversation's most recent earlier turns `recent_events` holds.
+    pub window: usize,
+    pub recalled: &'a [IrRecalledTurn],
+    /// Call IDs whose outputs `tool_results` replaces with a note.
+    pub omitted: &'a BTreeSet<String>,
+}
 
 /// Why IR could not be compiled.
 #[derive(Debug, thiserror::Error)]
@@ -40,16 +51,19 @@ pub fn compile(
     task_node: &NodeId,
     tools: &[IrTool],
 ) -> Result<InferenceIr, CompileError> {
-    compile_with(tx, run_id, task_node, tools, RECENT_RUN_OUTCOMES)
+    let omitted = BTreeSet::new();
+    let history = IrHistory { window: RECENT_RUN_OUTCOMES, recalled: &[], omitted: &omitted };
+    compile_with(tx, run_id, task_node, tools, history)
 }
 
-/// [`compile`] with `recent_events` holding at most `window` earlier turns.
+/// [`compile`] with the history Jev decided on: `history.window` recent turns, the recalled
+/// turns, and the omitted tool results replaced by a note.
 pub fn compile_with(
     tx: &Tx<'_>,
     run_id: &RunId,
     task_node: &NodeId,
     tools: &[IrTool],
-    window: usize,
+    history: IrHistory<'_>,
 ) -> Result<InferenceIr, CompileError> {
     let run = tx.run(run_id)?.ok_or_else(|| not_found("run", run_id))?;
     let task = tx.node(task_node)?.ok_or_else(|| not_found("node", task_node))?;
@@ -83,9 +97,10 @@ pub fn compile_with(
         system_prompt: run.system_prompt.clone(),
         task: IrTask { node_id: task.id, message },
         context,
-        recent_events: recent_run_outcomes(tx, run_id, window)?,
+        recent_events: recent_run_outcomes(tx, run_id, history.window)?,
         tools: tools.to_vec(),
-        tool_results: tool_results(tx, run_id)?,
+        tool_results: tool_results(tx, run_id, history.omitted)?,
+        recalled: history.recalled.to_vec(),
     };
     Contract::InferenceIr.validate(&serde_json::to_value(&ir).expect("IR serializes"))?;
     Ok(ir)
@@ -145,8 +160,13 @@ fn recent_run_outcomes(
     Ok(outcomes)
 }
 
-/// The tool calls recorded so far in `run_id`, oldest first, with their outcome.
-fn tool_results(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrToolResult>, StoreError> {
+/// The tool calls recorded so far in `run_id`, oldest first, with their outcome; the outputs of
+/// calls in `omitted` are replaced by a note.
+fn tool_results(
+    tx: &Tx<'_>,
+    run_id: &RunId,
+    omitted: &BTreeSet<String>,
+) -> Result<Vec<IrToolResult>, StoreError> {
     let mut results: Vec<IrToolResult> = Vec::new();
     for event in tx.events(run_id)? {
         match event.data {
@@ -173,7 +193,11 @@ fn tool_results(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrToolResult>, StoreE
                 if let Some(result) = results.iter_mut().find(|result| result.call_id == call_id) {
                     result.status =
                         if is_error { IrToolStatus::Failed } else { IrToolStatus::Completed };
-                    result.output = Some(output);
+                    result.output = Some(if omitted.contains(&call_id) {
+                        omitted_output(&output)
+                    } else {
+                        output
+                    });
                     result.reason = None;
                 }
             }
@@ -181,6 +205,17 @@ fn tool_results(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<IrToolResult>, StoreE
         }
     }
     Ok(results)
+}
+
+/// The note that stands in for a tool output left out of IR.
+fn omitted_output(output: &serde_json::Value) -> serde_json::Value {
+    let size = crate::domain::tool_output_text(output).chars().count();
+    serde_json::json!({
+        "omitted": format!(
+            "Left out: Jev judged this {size}-character result not needed for the current step. \
+             DAGOS brings it back if it becomes relevant."
+        )
+    })
 }
 
 fn not_found(kind: &'static str, id: impl ToString) -> CompileError {

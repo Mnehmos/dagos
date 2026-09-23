@@ -1,37 +1,45 @@
-//! Recall: IR carries only the conversation's latest turns, and `dagos.recall` finds the older
-//! ones verbatim. Jev judges relevance when it can; word overlap judges otherwise.
+//! Recall and compaction: Jev decides automatically which earlier turns of the project's chats
+//! reach IR, and which of a long run's earlier tool results stay in it. The model never asks.
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use common::memory_store;
-use dagos_core::context::recall::{
-    RECALL_TOOL, RecallChunk, cursor_output, lexical_relevance, search_output,
-};
+use common::{memory_store, payload};
+use dagos_core::context::recall::RecallChunk;
 use dagos_core::context::{FakeJev, JevClassifier, JevError};
 use dagos_core::domain::{
-    EventData, InferenceIr, JevRequest, ModelId, ProjectId, ProviderId, Run, RunConfig, RunStatus,
-    ToolDecider,
+    EventData, InferenceIr, IrTool, JevRequest, ModelId, ProjectId, ProviderId, Run, RunConfig,
+    RunStatus,
 };
-use dagos_core::provider::FakeProvider;
-use dagos_core::runtime::Runtime;
+use dagos_core::provider::{
+    DeltaSink, FakeProvider, InferenceProvider, InferenceRequest, ProviderError,
+};
+use dagos_core::runtime::{Runtime, Thread};
 use dagos_core::store::Store;
-use serde_json::{Value, json};
+use dagos_core::tools::{AllowAll, ToolExecutor, ToolOutput, ToolRequest};
+use serde_json::json;
 
-fn config(model: &str) -> RunConfig {
+fn config(provider: &str, model: &str) -> RunConfig {
     RunConfig {
-        provider_id: ProviderId::parse("fake").unwrap(),
+        provider_id: ProviderId::parse(provider).unwrap(),
         model_id: ModelId::parse(model).unwrap(),
         system_prompt: String::new(),
     }
 }
 
-/// Classifies like the fake Jev and judges relevance with scripted scores: turns mentioning
-/// `shellfish` are relevant. Or fails to judge.
+/// Classifies like the fake Jev and judges relevance by a marker: chunks containing `relevant`
+/// (e.g. `shellfish`) score 0.97, the rest 0.04. Records every query it is asked.
 struct JudgingJev {
-    fail: bool,
+    relevant: &'static str,
+    queries: Mutex<Vec<(String, usize)>>,
+}
+
+impl JudgingJev {
+    fn new(relevant: &'static str) -> Arc<Self> {
+        Arc::new(Self { relevant, queries: Mutex::new(Vec::new()) })
+    }
 }
 
 #[async_trait]
@@ -44,39 +52,16 @@ impl JevClassifier for JudgingJev {
         FakeJev::new().classify(request).await
     }
 
-    async fn relevance(&self, _query: &str, chunks: &[RecallChunk]) -> Result<Vec<f64>, JevError> {
-        if self.fail {
-            return Err(JevError("offline".into()));
-        }
-        Ok(chunks.iter().map(|c| if c.text.contains("shellfish") { 0.97 } else { 0.04 }).collect())
+    async fn relevance(
+        &self,
+        query: &str,
+        chunks: &[RecallChunk],
+    ) -> Result<Option<Vec<f64>>, JevError> {
+        self.queries.lock().unwrap().push((query.to_owned(), chunks.len()));
+        let score =
+            |chunk: &RecallChunk| if chunk.text.contains(self.relevant) { 0.97 } else { 0.04 };
+        Ok(Some(chunks.iter().map(score).collect()))
     }
-
-    fn judges_relevance(&self) -> bool {
-        true
-    }
-}
-
-const TURNS: [&str; 4] = [
-    "Help me plan a trip to Lisbon in October with my sister.",
-    "My sister is allergic to shellfish, keep that in mind for restaurants.",
-    "Can you draft a packing list too?",
-    "Also, what is a good gift for my mum's birthday next week?",
-];
-
-/// A conversation of [`TURNS`] under a one-turn window.
-async fn conversation(jev: Arc<dyn JevClassifier>) -> (Arc<Store>, Runtime, ProjectId, Vec<Run>) {
-    let store = Arc::new(memory_store());
-    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
-    let runtime = Runtime::new(store.clone(), jev)
-        .with_provider(Arc::new(FakeProvider::new()))
-        .with_conversation_window(1);
-    let mut runs = Vec::new();
-    for turn in TURNS {
-        let run = runtime.run(&project, turn, &config("fake-echo")).await.unwrap();
-        assert_eq!(run.status, RunStatus::Completed, "{run:?}");
-        runs.push(run);
-    }
-    (store, runtime, project, runs)
 }
 
 fn irs(store: &Store, run: &Run) -> Vec<InferenceIr> {
@@ -90,126 +75,183 @@ fn irs(store: &Store, run: &Run) -> Vec<InferenceIr> {
         .collect()
 }
 
-/// The recall call's decision and output in `run`.
-fn recall_result(store: &Store, run: &Run) -> (ToolDecider, Value, bool) {
-    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
-    let decided = events.iter().find_map(|event| match &event.data {
-        EventData::ToolDecided { by, allowed: true, .. } => Some(*by),
-        _ => None,
-    });
-    let completed = events.into_iter().find_map(|event| match event.data {
-        EventData::ToolCompleted { output, is_error, .. } => Some((output, is_error)),
-        _ => None,
-    });
-    let (output, is_error) = completed.expect("the recall call completed");
-    (decided.expect("the recall call was allowed"), output, is_error)
+const TRIP: [&str; 4] = [
+    "Help me plan a trip to Lisbon in October with my sister.",
+    "My sister is allergic to shellfish, keep that in mind for restaurants.",
+    "Can you draft a packing list too?",
+    "Also, what is a good gift for my mum's birthday next week?",
+];
+
+/// A chat of [`TRIP`] under a one-turn window.
+async fn trip(jev: Arc<dyn JevClassifier>) -> (Arc<Store>, Runtime, ProjectId, Vec<Run>) {
+    let store = Arc::new(memory_store());
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let runtime = Runtime::new(store.clone(), jev)
+        .with_provider(Arc::new(FakeProvider::new()))
+        .with_conversation_window(1);
+    let mut runs = Vec::new();
+    for turn in TRIP {
+        let run = runtime.run(&project, turn, &config("fake", "fake-echo")).await.unwrap();
+        assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+        runs.push(run);
+    }
+    (store, runtime, project, runs)
 }
 
 #[tokio::test]
-async fn ir_keeps_the_window_and_recall_is_offered_only_when_older_turns_exist() {
-    let (store, runtime, project, runs) = conversation(Arc::new(FakeJev::new())).await;
-    let first = &irs(&store, &runs[1])[0];
-    assert_eq!(first.recent_events.len(), 1);
-    assert!(first.tools.is_empty(), "one earlier turn fits the window: {:?}", first.tools);
+async fn jev_recalls_relevant_turns_from_any_chat_verbatim() {
+    let jev = JudgingJev::new("shellfish");
+    let (store, runtime, project, runs) = trip(jev.clone()).await;
 
-    let later = &irs(&store, &runs[3])[0];
-    assert_eq!(later.recent_events.len(), 1, "only the window reaches IR");
-    assert_eq!(later.recent_events[0].request.as_deref(), Some(TURNS[2]));
-    let names: Vec<&str> = later.tools.iter().map(|tool| tool.name.as_str()).collect();
-    assert_eq!(names, [RECALL_TOOL]);
+    // Within the chat: the shellfish turn left the one-turn window and comes back as recalled.
+    let ir = &irs(&store, &runs[3])[0];
+    assert_eq!(ir.recent_events.len(), 1);
+    assert_eq!(ir.recalled.len(), 1);
+    assert_eq!(ir.recalled[0].run_id, runs[1].id);
+    assert!(ir.recalled[0].text.contains(&format!("user: {}", TRIP[1])), "verbatim");
+    assert!(ir.recalled[0].text.contains("assistant: "), "with the reply");
+    // Only turns outside the window are judged: the run before, in recent_events, is not.
+    let (query, judged) = jev.queries.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((query.as_str(), judged), (TRIP[3], 2));
 
-    // A conversation that has not outgrown the window is not offered recall.
-    let fresh = runtime
-        .start_in(dagos_core::runtime::Thread::New(&project), "hello", &config("fake-echo"))
+    // A new chat of the same project recalls it too: chats organize, the project remembers.
+    let started = runtime
+        .start_in(
+            Thread::New(&project),
+            "Where should we eat tonight?",
+            &config("fake", "fake-echo"),
+        )
         .unwrap();
-    let fresh = runtime.finish(fresh).await.unwrap();
-    assert!(irs(&store, &fresh)[0].tools.is_empty());
+    let dinner = runtime.finish(started).await.unwrap();
+    let ir = &irs(&store, &dinner)[0];
+    assert!(ir.recent_events.is_empty(), "a new chat has no turns of its own");
+    assert_eq!(ir.recalled.len(), 1);
+    assert_eq!(ir.recalled[0].run_id, runs[1].id);
+    assert_eq!(ir.recalled[0].chat, TRIP[0], "the chat is titled after its first message");
 }
 
 #[tokio::test]
-async fn jev_finds_the_relevant_turn_verbatim_with_cursors() {
-    let (store, runtime, project, runs) = conversation(Arc::new(JudgingJev { fail: false })).await;
-    let message = r#"dagos.recall {"query": "sister food allergy"}"#;
-    let run = runtime.run(&project, message, &config("fake-tool")).await.unwrap();
-    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
-
-    let (by, output, is_error) = recall_result(&store, &run);
-    assert_eq!(by, ToolDecider::Policy, "recall reads only this conversation: no approval");
-    assert!(!is_error);
-    let result = &output["structured"];
-    assert_eq!(result["scored_by"], "judging-jev");
-    assert_eq!(result["searched"], 4);
-    assert_eq!(result["dropped"], 3);
-    let hit = &result["matches"][0];
-    assert_eq!(hit["turn"], runs[1].id.as_str());
-    assert_eq!(hit["score"], 0.97);
-    assert!(hit["text"].as_str().unwrap().contains(&format!("user: {}", TURNS[1])));
-    assert_eq!(hit["before"], runs[0].id.as_str());
-    assert_eq!(hit["after"], runs[2].id.as_str());
-    let text = output["content"][0]["text"].as_str().unwrap();
-    assert!(text.contains("allergic to shellfish"), "{text}");
-
-    // The result reaches the model through the next IR.
-    let second = &irs(&store, &run)[1];
-    assert_eq!(second.tool_results[0].name, RECALL_TOOL);
-    assert_eq!(second.tool_results[0].output.as_ref(), Some(&output));
+async fn without_a_judging_jev_nothing_is_recalled() {
+    let (store, _, _, runs) = trip(Arc::new(FakeJev::new())).await;
+    let ir = &irs(&store, &runs[3])[0];
+    assert_eq!(ir.recent_events.len(), 1);
+    assert!(ir.recalled.is_empty());
+    assert!(!serde_json::to_value(ir).unwrap().as_object().unwrap().contains_key("recalled"));
 }
 
-#[tokio::test]
-async fn cursors_page_to_neighbouring_turns() {
-    let (store, runtime, project, runs) = conversation(Arc::new(FakeJev::new())).await;
-    let message = format!(r#"dagos.recall {{"cursor": "{}"}}"#, runs[0].id);
-    let run = runtime.run(&project, &message, &config("fake-tool")).await.unwrap();
-    let (_, output, is_error) = recall_result(&store, &run);
-    assert!(!is_error);
-    let turn = &output["structured"]["matches"][0];
-    assert_eq!(turn["turn"], runs[0].id.as_str());
-    assert!(turn.get("before").is_none(), "the first turn has nothing before it");
-    assert_eq!(turn["after"], runs[1].id.as_str());
-
-    let message = r#"dagos.recall {"cursor": "run_999999"}"#;
-    let run = runtime.run(&project, message, &config("fake-tool")).await.unwrap();
-    let (_, output, is_error) = recall_result(&store, &run);
-    assert!(is_error, "{output}");
-    assert!(output["error"].as_str().unwrap().contains("not an earlier turn"));
+/// Reads three files, one per step, then answers.
+struct Reader {
+    id: ProviderId,
 }
 
-#[tokio::test]
-async fn without_a_judging_jev_word_overlap_decides_and_says_so() {
-    for (jev, scored_by) in [
-        (Arc::new(FakeJev::new()) as Arc<dyn JevClassifier>, "word overlap"),
-        (
-            Arc::new(JudgingJev { fail: true }),
-            "word overlap (Jev failed: Jev classifier unavailable: offline)",
-        ),
-    ] {
-        let (store, runtime, project, runs) = conversation(jev).await;
-        let message = r#"dagos.recall {"query": "sister allergy"}"#;
-        let run = runtime.run(&project, message, &config("fake-tool")).await.unwrap();
-        let (_, output, _) = recall_result(&store, &run);
-        let result = &output["structured"];
-        assert_eq!(result["scored_by"], scored_by);
-        assert_eq!(result["matches"][0]["turn"], runs[1].id.as_str(), "{result}");
+#[async_trait]
+impl InferenceProvider for Reader {
+    fn id(&self) -> &ProviderId {
+        &self.id
+    }
+
+    fn suggested_models(&self) -> Vec<ModelId> {
+        Vec::new()
+    }
+
+    async fn infer(
+        &self,
+        request: InferenceRequest<'_>,
+        _deltas: &mut dyn DeltaSink,
+    ) -> Result<String, ProviderError> {
+        let step = request.ir.tool_results.len();
+        let mut response = json!({
+            "schema": "kiss.inference-response.v1",
+            "presentation": {"prose": format!("Reading file {}.", step + 1)},
+            "emissions": [],
+        });
+        if step < 3 {
+            response["tool_calls"] =
+                json!([{"name": "files.read", "arguments": {"path": format!("f{}", step + 1)}}]);
+        } else {
+            response["presentation"]["prose"] = json!("Done.");
+        }
+        Ok(response.to_string())
     }
 }
 
-#[test]
-fn word_overlap_compares_word_stems() {
-    let chunk = |id: &str, text: &str| RecallChunk { id: id.into(), text: text.into() };
-    let chunks = [
-        chunk("run_000001", "My sister is allergic to shellfish."),
-        chunk("run_000002", "Here is a packing list."),
-    ];
-    assert_eq!(lexical_relevance("sister allergy", &chunks), [1.0, 0.0]);
-    assert_eq!(
-        lexical_relevance("the and", &chunks),
-        [0.0, 0.0],
-        "common words alone match nothing"
-    );
+/// `f1` holds the answer, `f2` is large noise, `f3` is small.
+struct Files;
 
-    let output = search_output("sister allergy", &chunks, &[1.0, 0.0], "word overlap");
-    assert_eq!(output["structured"]["matches"].as_array().unwrap().len(), 1);
-    assert_eq!(output["structured"]["matches"][0]["after"], "run_000002");
-    assert!(cursor_output("run_000003", &chunks).is_none());
-    assert_eq!(json!(cursor_output("run_000002", &chunks).unwrap()["structured"]["searched"]), 1);
+#[async_trait]
+impl ToolExecutor for Files {
+    async fn call(&self, request: &ToolRequest) -> Result<ToolOutput, String> {
+        let text = match request.arguments["path"].as_str().unwrap() {
+            "f1" => format!("the answer is 42 {}", "a".repeat(3000)),
+            "f2" => format!("unrelated {}", "b".repeat(3000)),
+            _ => "short".to_owned(),
+        };
+        Ok(ToolOutput {
+            output: json!({"content": [{"type": "text", "text": text}]}),
+            is_error: false,
+        })
+    }
+}
+
+async fn read_files(jev: Arc<dyn JevClassifier>) -> (Arc<Store>, Run) {
+    let store = Arc::new(memory_store());
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let tool = IrTool {
+        name: "files.read".into(),
+        description: "Read a file.".into(),
+        input_schema: payload(json!({"type": "object"})),
+    };
+    let runtime = Runtime::new(store.clone(), jev)
+        .with_provider(Arc::new(Reader { id: ProviderId::parse("reader").unwrap() }))
+        .with_tools(vec![tool])
+        .with_tool_runner(Arc::new(Files), Arc::new(AllowAll));
+    let run = runtime.run(&project, "What is the answer?", &config("reader", "any")).await.unwrap();
+    assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+    (store, run)
+}
+
+#[tokio::test]
+async fn large_earlier_tool_results_jev_judges_irrelevant_are_left_out() {
+    let jev = JudgingJev::new("answer is 42");
+    let (store, run) = read_files(jev.clone()).await;
+    let steps = irs(&store, &run);
+    assert_eq!(steps.len(), 4);
+    let outputs = |ir: &InferenceIr| -> Vec<bool> {
+        ir.tool_results
+            .iter()
+            .map(|result| result.output.as_ref().unwrap().get("omitted").is_none())
+            .collect()
+    };
+    assert_eq!(outputs(&steps[1]), [true], "the latest round is always kept");
+    assert_eq!(outputs(&steps[2]), [true, true], "f1 is relevant, f2 is the latest");
+    assert_eq!(outputs(&steps[3]), [true, false, true], "f2 is left out; f3 is too small to judge");
+    let note = steps[3].tool_results[1].output.as_ref().unwrap()["omitted"].as_str().unwrap();
+    assert!(note.contains("3010-character"), "{note}");
+
+    // Each step judges afresh, against the request and the model's latest step.
+    let queries = jev.queries.lock().unwrap().clone();
+    assert_eq!(queries.len(), 2, "steps 3 and 4: step 2 had nothing older to judge");
+    assert!(queries[1].0.starts_with("What is the answer?"));
+    assert!(queries[1].0.contains("The assistant's latest step: Reading file 3."));
+    assert_eq!(queries[1].1, 2, "f1 and f2; f3 is the latest round");
+
+    // The full output stays in the event history and the inspector.
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    let completed =
+        events.iter().filter(|event| matches!(event.data, EventData::ToolCompleted { .. })).count();
+    assert_eq!(completed, 3);
+}
+
+#[tokio::test]
+async fn without_a_judging_jev_every_tool_result_is_kept() {
+    let (store, run) = read_files(Arc::new(FakeJev::new())).await;
+    let last = irs(&store, &run).pop().unwrap();
+    assert!(
+        last.tool_results.iter().all(|result| result
+            .output
+            .as_ref()
+            .unwrap()
+            .get("omitted")
+            .is_none())
+    );
 }

@@ -56,6 +56,7 @@ fn ir(tools: Vec<IrTool>) -> InferenceIr {
         ],
         tools,
         tool_results: vec![],
+        recalled: Vec::new(),
     }
 }
 
@@ -105,6 +106,7 @@ fn serialization_is_deterministic() {
         recent_events: vec![],
         tools: vec![],
         tool_results: vec![],
+        recalled: Vec::new(),
     };
     assert_eq!(
         serde_json::to_string(&minimal).unwrap(),

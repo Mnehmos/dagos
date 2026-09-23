@@ -29,6 +29,33 @@ pub struct InferenceIr {
     /// there are none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_results: Vec<IrToolResult>,
+    /// Earlier turns from any chat of the project that are not in `recent_events` but that Jev
+    /// judged relevant to this request, oldest first; omitted when there are none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recalled: Vec<IrRecalledTurn>,
+}
+
+/// A tool output's text parts (the `content` of MCP-shaped output), or its JSON when it has none.
+pub fn tool_output_text(output: &serde_json::Value) -> String {
+    let parts: Vec<&str> = output
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+        .collect();
+    if parts.is_empty() { output.to_string() } else { parts.join("\n") }
+}
+
+/// An earlier turn Jev recalled: its chat and what was said and done, verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrRecalledTurn {
+    pub run_id: RunId,
+    /// The chat's title.
+    pub chat: String,
+    /// The user's message, tool calls with result excerpts, and the reply or failure.
+    pub text: String,
 }
 
 closed_enum!(

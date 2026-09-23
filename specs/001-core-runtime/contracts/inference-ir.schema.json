@@ -62,6 +62,20 @@
         "additionalProperties": false
       }
     },
+    "recalled": {
+      "description": "Earlier turns from any chat of the project that are not in recent_events but that Jev judged relevant to this request, verbatim, oldest first. Only present when there are some.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["run_id", "chat", "text"],
+        "properties": {
+          "run_id": {"type": "string", "pattern": "^run_[0-9a-z]{1,64}$"},
+          "chat": {"type": "string", "description": "The title of the chat the turn belongs to."},
+          "text": {"type": "string", "description": "The user's message, tool calls with result excerpts, and the reply or failure."}
+        },
+        "additionalProperties": false
+      }
+    },
     "recent_events": {
       "description": "The conversation so far: this conversation's most recent earlier turns, oldest first, as an appended array. Each turn carries the user's message (request); completed turns carry the prose they presented, failed turns their error code and message.",
       "type": "array",

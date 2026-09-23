@@ -113,6 +113,7 @@ fn ir() -> InferenceIr {
         recent_events: vec![],
         tools: vec![],
         tool_results: vec![],
+        recalled: vec![],
     }
 }
 
@@ -501,7 +502,7 @@ async fn typesafe_jev_also_decides_which_tools_the_model_sees() {
 }
 
 fn recall_chunk(id: &str, text: &str) -> dagos_core::context::recall::RecallChunk {
-    dagos_core::context::recall::RecallChunk { id: id.into(), text: text.into() }
+    dagos_core::context::recall::RecallChunk::new(id, text)
 }
 
 #[tokio::test]
@@ -519,16 +520,15 @@ async fn typesafe_jev_judges_recall_relevance_one_question_per_turn() {
     let (base_url, request) = mock("200 OK", "application/json", vec![response]).await;
     let jev =
         DecisionsJev::new(provider(&base_url, true), ModelId::parse("typesafe/jev-1.13").unwrap());
-    assert!(jev.judges_relevance());
     let scores = jev.relevance("sister food allergy", &chunks).await.unwrap();
-    assert_eq!(scores, [0.08, 0.97]);
+    assert_eq!(scores, Some(vec![0.08, 0.97]));
 
     let captured = request.await.unwrap();
     assert!(captured.head.starts_with("POST /alpha/decisions HTTP/1.1"), "{}", captured.head);
     assert_eq!(captured.body["state"], json!({"query": "sister food allergy"}));
     let question = &captured.body["questions"]["run_000002"];
     assert_eq!(question["type"], "noul");
-    assert_eq!(question["instructions"]["turn"], "user: My sister is allergic to shellfish");
+    assert_eq!(question["instructions"]["item"], "user: My sister is allergic to shellfish");
 }
 
 #[test]

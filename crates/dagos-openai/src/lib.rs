@@ -307,17 +307,17 @@ impl JevClassifier for DecisionsJev {
         classification_from_decisions(request, &response).map_err(JevError)
     }
 
-    async fn relevance(&self, query: &str, chunks: &[RecallChunk]) -> Result<Vec<f64>, JevError> {
+    async fn relevance(
+        &self,
+        query: &str,
+        chunks: &[RecallChunk],
+    ) -> Result<Option<Vec<f64>>, JevError> {
         let mut scores = Vec::with_capacity(chunks.len());
         for batch in recall_batches(chunks) {
             let response = self.decide(recall_body(&self.model, query, batch)).await?;
             scores.extend(relevance_from_decisions(batch, &response).map_err(JevError)?);
         }
-        Ok(scores)
-    }
-
-    fn judges_relevance(&self) -> bool {
-        true
+        Ok(Some(scores))
     }
 }
 

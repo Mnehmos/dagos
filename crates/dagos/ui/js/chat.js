@@ -98,6 +98,12 @@ function turnMetaHtml(turn) {
   if (turn.tools_offered) {
     parts.push(`<span title="Tools Jev exposed to the model this turn, of those offered">tools ${turn.tools_exposed}/${turn.tools_offered}</span>`);
   }
+  if (turn.recalled) {
+    parts.push(`<span title="Earlier turns (from any chat of the project) Jev judged relevant and brought back into the model's context">recalled ${turn.recalled}</span>`);
+  }
+  if (turn.omitted_results) {
+    parts.push(`<span title="Large earlier tool results Jev left out of the model's context because the current step did not need them">${turn.omitted_results} result${turn.omitted_results === 1 ? "" : "s"} left out</span>`);
+  }
   const tools = (turn.items ?? []).filter((item) => item.kind === "tool").length;
   if (tools) parts.push(`<span title="Tool calls in this turn">${tools} tool call${tools === 1 ? "" : "s"}</span>`);
   parts.push(`<button type="button" class="link" data-inspect="${esc(run.id)}">Inspect</button>`);

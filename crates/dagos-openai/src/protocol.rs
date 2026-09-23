@@ -16,9 +16,9 @@ The user message is a kiss.inference-ir.v1 JSON document:
 - task.message is the request to answer; task.node_id is its durable node.
 - context lists the durable DAG nodes that are active for this request, with their relations.
 - recent_events is the conversation so far, oldest first: each earlier turn's request (the user's \
-message) and your reply (prose), or why that turn failed. It holds only the most recent turns; \
-when the dagos.recall tool is listed, older turns exist and it searches them. Use it when the \
-request refers to something said earlier that recent_events does not show.
+message) and your reply (prose), or why that turn failed. It holds only the most recent turns.
+- recalled, if present, are older turns, from this chat or other chats of the project, that DAGOS \
+judged relevant to this request, verbatim.
 - tools, if present, are tools you may use. To use them, list calls in \"tool_calls\" (name exactly \
 as listed, arguments matching its input_schema). DAGOS runs the calls the person permits and sends \
 you a new IR whose tool_results say what each returned, failed with, or why it was denied; keep \
@@ -26,7 +26,9 @@ going until you can answer, then reply without tool_calls. Every reply, includin
 calls tools, is still exactly one JSON object: say what you are doing in presentation.prose, never \
 before or after the object. Some tools act on the person's computer: call only what the request \
 needs.
-- tool_results, if present, are this request's earlier tool calls and their outcomes.
+- tool_results, if present, are this request's earlier tool calls and their outcomes. An output \
+of {\"omitted\": ...} is a large result DAGOS left out because it is not needed for the current \
+step; it comes back if it becomes relevant, and you can call the tool again if you need it now.
 
 Reply with exactly one JSON object that satisfies kiss.inference-response.v1 and nothing else: no \
 markdown fences and no text outside the object.
@@ -265,8 +267,9 @@ pub fn recall_batches(chunks: &[RecallChunk]) -> Vec<&[RecallChunk]> {
     batches
 }
 
-/// The Decisions API request judging which of `chunks` (earlier conversation turns) hold
-/// information relevant to `query`: one `noul` question per chunk, keyed by its ID.
+/// The Decisions API request judging which of `chunks` (earlier turns of the project's chats, or
+/// tool results from earlier steps of a run) hold information relevant to `query`: one `noul`
+/// question per chunk, keyed by its ID.
 pub fn recall_body(model_id: &ModelId, query: &str, chunks: &[RecallChunk]) -> Value {
     let questions: serde_json::Map<String, Value> = chunks
         .iter()
@@ -274,13 +277,15 @@ pub fn recall_body(model_id: &ModelId, query: &str, chunks: &[RecallChunk]) -> V
             let question = json!({
                 "type": "noul",
                 "instructions": {
-                    "task": "Decide whether this earlier turn of the conversation contains \
-                             information relevant to the query in `state.query`.",
-                    "turn": chunk.text,
+                    "task": "Decide whether this item from the project's history (an earlier \
+                             chat turn, or a tool result from an earlier step) holds information \
+                             needed to answer `state.query`.",
+                    "item": chunk.text,
                 },
                 "criteria": {
-                    "true": "The turn states, asks, or decides something the query is looking for.",
-                    "false": "The turn has nothing the query is looking for.",
+                    "true": "The item states, shows, asks, or decides something that answering \
+                             the query needs.",
+                    "false": "Answering the query does not need anything in this item.",
                 },
             });
             (chunk.id.clone(), question)

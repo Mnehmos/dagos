@@ -31,8 +31,8 @@ pub use ids::{
     SequentialIds,
 };
 pub use ir::{
-    InferenceIr, IrContextItem, IrEvent, IrEventType, IrRelation, IrTask, IrTool, IrToolResult,
-    IrToolStatus,
+    InferenceIr, IrContextItem, IrEvent, IrEventType, IrRecalledTurn, IrRelation, IrTask, IrTool,
+    IrToolResult, IrToolStatus, tool_output_text,
 };
 pub use jev::{
     ContextClassification, JevCandidate, JevEdge, JevRequest, JevToolCandidate, NodeClassification,

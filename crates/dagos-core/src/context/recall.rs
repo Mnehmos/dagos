@@ -1,128 +1,121 @@
-//! Recall: searching a conversation's earlier turns, including those IR no longer carries.
+//! Recall: Jev decides, every run, which of the project's earlier turns the model sees, and, every
+//! step, which of the run's earlier tool results it still sees.
 //!
-//! IR carries only a conversation's most recent turns. Instead of summarizing older turns (and
-//! losing what the summary leaves out), DAGOS keeps them on disk and offers the model the
-//! [`RECALL_TOOL`]: every earlier turn is one chunk, Jev judges which chunks are relevant to the
-//! model's query, and the model gets the relevant turns verbatim, with cursors to page to their
-//! neighbours. Jev only classifies relevance here too; it never sees the store or answers.
+//! Chats are how people organize work; the project DAG is what agents remember. Durable nodes of
+//! every chat are already Jev candidates on every run. What is not a node is the turns
+//! themselves: replies and tool results. IR carries the chat's most recent turns; instead of
+//! summarizing the rest (and losing what a summary leaves out), DAGOS keeps every turn of every
+//! chat and asks Jev one relevance question per turn. Relevant turns reach IR verbatim as
+//! `recalled`. Inside a long run, the same question decides which large tool results from earlier
+//! rounds stay in `tool_results`; the others are left out until they become relevant again. Jev
+//! only classifies relevance; DAGOS reads the turns and the model never has to ask.
 
-use std::collections::BTreeSet;
+use serde_json::Value;
 
-use serde_json::{Value, json};
-
-use crate::domain::{EventData, IrTool, Payload, RunId, RunStatus};
+pub use crate::domain::tool_output_text as output_text;
+use crate::domain::{EventData, IrRecalledTurn, RunId, RunStatus};
 use crate::store::{StoreError, Tx};
 
-/// The name under which the model sees the recall tool.
-pub const RECALL_TOOL: &str = "dagos.recall";
-
-/// A chunk at or above this relevance is a match.
+/// A chunk at or above this relevance is recalled or kept.
 pub const RECALL_THRESHOLD: f64 = 0.5;
 
-/// The most matches one search returns.
-pub const RECALL_MAX_MATCHES: usize = 3;
+/// The most turns one run recalls.
+pub const RECALL_MAX_TURNS: usize = 5;
 
-/// The most earlier turns one search reads, newest first.
-pub const RECALL_MAX_TURNS: usize = 200;
+/// The most earlier turns Jev judges per run, newest first.
+pub const RECALL_SEARCH_TURNS: usize = 300;
 
-/// The longest text one chunk carries; longer turns are cut.
+/// The longest text one chunk carries; longer turns and tool results are cut.
 pub const RECALL_CHUNK_CHARS: usize = 4000;
 
-/// The longest excerpt of one tool output inside a chunk.
+/// Tool results shorter than this always stay in IR: judging them costs more than it saves.
+pub const COMPACT_MIN_CHARS: usize = 2000;
+
+/// The longest excerpt of one tool output inside a turn.
 const TOOL_OUTPUT_CHARS: usize = 500;
 
-/// One earlier conversation turn as recall sees it.
+/// One piece of history Jev judges: an earlier turn (`run_…`) or a tool result (`call_…`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecallChunk {
-    /// The turn's run ID, which is also its cursor.
     pub id: String,
-    /// The turn as text: the user's message, the reply or failure, and its tool calls.
     pub text: String,
 }
 
-/// The recall tool's description for IR.
-pub fn recall_tool() -> IrTool {
-    let schema = json!({
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "What to look for, e.g. \"sister food allergy\"."
-            },
-            "cursor": {
-                "type": "string",
-                "description": "A `before` or `after` cursor from an earlier recall result: \
-                                returns that turn instead of searching."
-            }
-        },
-        "additionalProperties": false
-    });
-    IrTool {
-        name: RECALL_TOOL.to_owned(),
-        description: "Search this conversation's earlier turns, including those no longer in \
-                      recent_events, and return the relevant ones verbatim. Pass `query` to \
-                      search, or a `cursor` from a result to read the turn before or after it."
-            .to_owned(),
-        input_schema: match schema {
-            Value::Object(map) => map,
-            _ => unreachable!("the recall schema is an object"),
-        },
+impl RecallChunk {
+    pub fn new(id: impl Into<String>, text: impl Into<String>) -> Self {
+        Self { id: id.into(), text: text.into() }
     }
 }
 
-/// A recall call's arguments.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecallQuery {
-    Search(String),
-    Cursor(String),
-}
-
-impl RecallQuery {
-    /// Reads the tool call's arguments: a non-empty `query`, or a `cursor`.
-    pub fn parse(arguments: &Payload) -> Result<Self, String> {
-        let text = |key: &str| {
-            arguments.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
-        };
-        match (text("cursor"), text("query")) {
-            (Some(cursor), _) => Ok(Self::Cursor(cursor.to_owned())),
-            (None, Some(query)) => Ok(Self::Search(query.to_owned())),
-            (None, None) => Err("pass a non-empty `query` or a `cursor`".to_owned()),
-        }
-    }
-}
-
-/// The conversation's turns before `run_id`, oldest first: at most [`RECALL_MAX_TURNS`].
-pub fn conversation_chunks(tx: &Tx<'_>, run_id: &RunId) -> Result<Vec<RecallChunk>, StoreError> {
-    let mut chunks = Vec::new();
-    let mut cursor = run_id.clone();
-    while chunks.len() < RECALL_MAX_TURNS {
+/// The project's finished turns that `run_id`'s IR does not already carry: every chat's turns
+/// except this run and the `window` turns of its own chat that `recent_events` holds. Oldest
+/// first, at most [`RECALL_SEARCH_TURNS`].
+pub fn recall_candidates(
+    tx: &Tx<'_>,
+    run_id: &RunId,
+    window: usize,
+) -> Result<Vec<IrRecalledTurn>, StoreError> {
+    let run = tx
+        .run(run_id)?
+        .ok_or_else(|| StoreError::NotFound { kind: "run", id: run_id.to_string() })?;
+    let mut in_ir = vec![run.id.clone()];
+    let mut cursor = run.id.clone();
+    while in_ir.len() <= window {
         let Some(previous) = tx.previous_run(&cursor)? else { break };
         cursor = previous.id.clone();
-        if previous.status == RunStatus::Running {
-            continue;
-        }
+        in_ir.push(previous.id);
+    }
+    let titles: std::collections::BTreeMap<_, _> = tx
+        .conversations(&run.project_id)?
+        .into_iter()
+        .map(|conversation| (conversation.id, conversation.title))
+        .collect();
+    let runs: Vec<_> = tx
+        .runs(&run.project_id)?
+        .into_iter()
+        .filter(|other| !in_ir.contains(&other.id) && other.status != RunStatus::Running)
+        .collect();
+    let mut turns = Vec::new();
+    for turn in &runs[runs.len().saturating_sub(RECALL_SEARCH_TURNS)..] {
         let events: Vec<EventData> =
-            tx.events(&previous.id)?.into_iter().map(|event| event.data).collect();
-        let text = turn_text(&events);
-        chunks.push(RecallChunk { id: previous.id.to_string(), text });
+            tx.events(&turn.id)?.into_iter().map(|event| event.data).collect();
+        turns.push(IrRecalledTurn {
+            run_id: turn.id.clone(),
+            chat: titles.get(&turn.conversation_id).cloned().unwrap_or_default(),
+            text: turn_text(&events),
+        });
     }
-    chunks.reverse();
-    Ok(chunks)
+    Ok(turns)
 }
 
-/// How many turns the conversation has before `run_id`, counting at most `limit`.
-pub fn earlier_turns(tx: &Tx<'_>, run_id: &RunId, limit: usize) -> Result<usize, StoreError> {
-    let mut count = 0;
-    let mut cursor = run_id.clone();
-    while count < limit {
-        let Some(previous) = tx.previous_run(&cursor)? else { break };
-        cursor = previous.id;
-        count += 1;
-    }
-    Ok(count)
+/// A turn as Jev judges it: its chat and its text.
+pub fn turn_chunk(turn: &IrRecalledTurn) -> RecallChunk {
+    RecallChunk::new(turn.run_id.as_str(), format!("chat “{}”\n{}", turn.chat, turn.text))
 }
 
-/// One turn as text, cut at [`RECALL_CHUNK_CHARS`].
+/// The turns to recall: those at or above [`RECALL_THRESHOLD`], the [`RECALL_MAX_TURNS`] most
+/// relevant, oldest first.
+pub fn select_recalled(turns: Vec<IrRecalledTurn>, scores: &[f64]) -> Vec<IrRecalledTurn> {
+    let mut ranked: Vec<(usize, f64)> = scores
+        .iter()
+        .copied()
+        .enumerate()
+        .filter(|(_, score)| *score >= RECALL_THRESHOLD)
+        .collect();
+    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
+    ranked.truncate(RECALL_MAX_TURNS);
+    let mut chosen: Vec<usize> = ranked.into_iter().map(|(index, _)| index).collect();
+    chosen.sort_unstable();
+    turns
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| chosen.binary_search(index).is_ok())
+        .map(|(_, turn)| turn)
+        .collect()
+}
+
+/// One turn as text: the user's message, its tool calls with an excerpt of each result, and the
+/// reply or failure. Cut at [`RECALL_CHUNK_CHARS`].
 fn turn_text(events: &[EventData]) -> String {
     let mut lines = Vec::new();
     for event in events {
@@ -145,122 +138,10 @@ fn turn_text(events: &[EventData]) -> String {
     cut(&lines.join("\n"), RECALL_CHUNK_CHARS)
 }
 
-/// A tool output's text parts, or its JSON when it has none.
-fn output_text(output: &Value) -> String {
-    let parts: Vec<&str> = output
-        .get("content")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part.get("text").and_then(Value::as_str))
-        .collect();
-    if parts.is_empty() { output.to_string() } else { parts.join("\n") }
-}
-
-fn cut(text: &str, limit: usize) -> String {
+/// `text` cut to at most `limit` characters, marked with `…` when cut.
+pub fn cut(text: &str, limit: usize) -> String {
     match text.char_indices().nth(limit) {
         Some((end, _)) => format!("{}…", &text[..end]),
         None => text.to_owned(),
     }
-}
-
-/// Deterministic relevance without a model: the share of the query's words (compared by their
-/// first five letters, so `allergy` meets `allergic`) that appear in each chunk.
-pub fn lexical_relevance(query: &str, chunks: &[RecallChunk]) -> Vec<f64> {
-    let terms = stems(query);
-    chunks
-        .iter()
-        .map(|chunk| {
-            if terms.is_empty() {
-                return 0.0;
-            }
-            let words = stems(&chunk.text);
-            let hits = terms.iter().filter(|term| words.contains(*term)).count();
-            hits as f64 / terms.len() as f64
-        })
-        .collect()
-}
-
-/// Lowercase word stems of three or more letters, minus common words.
-fn stems(text: &str) -> BTreeSet<String> {
-    const COMMON: &[&str] =
-        &["the", "and", "for", "with", "that", "this", "what", "about", "you", "did", "was", "are"];
-    text.split(|c: char| !c.is_alphanumeric())
-        .map(str::to_lowercase)
-        .filter(|word| word.chars().count() >= 3 && !COMMON.contains(&word.as_str()))
-        .map(|word| word.chars().take(5).collect())
-        .collect()
-}
-
-/// A search result: the matching turns, best first, with cursors to their neighbours.
-/// `scored_by` names what judged relevance.
-pub fn search_output(
-    query: &str,
-    chunks: &[RecallChunk],
-    scores: &[f64],
-    scored_by: &str,
-) -> Value {
-    let mut ranked: Vec<(usize, f64)> = scores
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(_, score)| *score >= RECALL_THRESHOLD)
-        .collect();
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
-    ranked.truncate(RECALL_MAX_MATCHES);
-    let matches: Vec<Value> =
-        ranked.iter().map(|(index, score)| turn_json(chunks, *index, Some(*score))).collect();
-    let structured = json!({
-        "query": query,
-        "matches": matches,
-        "searched": chunks.len(),
-        "dropped": chunks.len() - matches.len(),
-        "scored_by": scored_by,
-    });
-    let mut text = format!(
-        "Searched {} earlier turns for “{query}”: {} relevant.",
-        chunks.len(),
-        matches.len()
-    );
-    for entry in &matches {
-        text.push_str(&format!(
-            "\n\n**{}** · relevance {:.2}\n\n{}",
-            entry["turn"].as_str().unwrap_or_default(),
-            entry["score"].as_f64().unwrap_or_default(),
-            quoted(entry["text"].as_str().unwrap_or_default()),
-        ));
-    }
-    output(text, structured)
-}
-
-/// The turn a cursor names, with cursors to its neighbours, or `None` if the cursor names no
-/// earlier turn of this conversation.
-pub fn cursor_output(cursor: &str, chunks: &[RecallChunk]) -> Option<Value> {
-    let index = chunks.iter().position(|chunk| chunk.id == cursor)?;
-    let entry = turn_json(chunks, index, None);
-    let text = format!("**{cursor}**\n\n{}", quoted(entry["text"].as_str().unwrap_or_default()));
-    Some(output(text, json!({"matches": [entry], "searched": 1, "dropped": 0})))
-}
-
-fn turn_json(chunks: &[RecallChunk], index: usize, score: Option<f64>) -> Value {
-    let mut entry = json!({"turn": chunks[index].id, "text": chunks[index].text});
-    if let Some(score) = score {
-        entry["score"] = json!((score * 100.0).round() / 100.0);
-    }
-    if let Some(before) = index.checked_sub(1) {
-        entry["before"] = json!(chunks[before].id);
-    }
-    if let Some(after) = chunks.get(index + 1) {
-        entry["after"] = json!(after.id);
-    }
-    entry
-}
-
-fn quoted(text: &str) -> String {
-    text.lines().map(|line| format!("> {line}")).collect::<Vec<_>>().join("\n")
-}
-
-/// Tool output in the shape MCP tools produce: text for people, `structured` for the model.
-fn output(text: String, structured: Value) -> Value {
-    json!({"content": [{"type": "text", "text": text}], "structured": structured})
 }

@@ -69,7 +69,7 @@ test("turns show the message, the reply, failures, and Jev fallbacks", () => {
   const html = threadHtml(
     {
       turns: [
-        { run: run("run_1", "completed"), message: "Hi", prose: "**Hello**", context_size: 2, jev_id: "openrouter-jev:~typesafe/jev-latest", jev_fallback: false, emitted_nodes: 1, emitted_edges: 0, failure: null },
+        { run: run("run_1", "completed"), message: "Hi", prose: "**Hello**", context_size: 2, jev_id: "openrouter-jev:~typesafe/jev-latest", jev_fallback: false, emitted_nodes: 1, emitted_edges: 0, recalled: 2, omitted_results: 1, failure: null },
         { run: run("run_2", "failed"), message: "Break", prose: "", context_size: 0, jev_id: "fake-jev", jev_fallback: true, emitted_nodes: 0, emitted_edges: 0, failure: { error_code: "response_invalid", message: "run failed", rejected_stage: "response", rejected_reason: "not JSON" } },
         { run: run("run_3", "running"), message: "Next", prose: "", context_size: 0, jev_id: null, jev_fallback: false, emitted_nodes: 0, emitted_edges: 0, failure: null },
       ],
@@ -79,6 +79,8 @@ test("turns show the message, the reply, failures, and Jev fallbacks", () => {
   assert.ok(html.includes("<strong>Hello</strong>"));
   assert.ok(html.includes("openrouter · ~typesafe/jev-latest"));
   assert.ok(html.includes("+1 node"));
+  assert.ok(html.includes("recalled 2") && html.includes("1 result left out"));
+  assert.equal((html.match(/recalled \d/g) ?? []).length, 1, "only turns that recalled say so");
   assert.ok(html.includes("The reply was rejected") && html.includes("not JSON"));
   assert.ok(html.includes("Jev fallback"));
   assert.ok(html.includes('data-live-run="run_3">Stream&lt;ing&gt;'), "streamed prose is plain, escaped text");
