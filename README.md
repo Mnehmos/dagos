@@ -43,42 +43,50 @@ cargo run -p dagos -- run "Try this" --model fake-malformed
 (`--provider`, `--model`, `--system-prompt`, `--system-prompt-file`); `dagos run` accepts the same
 flags as one-off overrides. Each run records the configuration it actually used.
 
-### Real providers
+### Real providers and API keys
 
-Setting `OPENROUTER_API_KEY` or `OPENAI_API_KEY` enables the `openrouter` or `openai` provider.
-Other OpenAI-compatible endpoints go in `.dagos/providers.json`:
+The easiest way is the app: run `dagos serve`, press **⚙** (or `s`), pick **OpenRouter**, **OpenAI**,
+or **Z.ai**, paste a key, and press **Save & test**. DAGOS checks the key, lists the provider's
+models, and lets you pick one for new runs. **+ Add endpoint** adds any other OpenAI-compatible
+server (Ollama, LM Studio, vLLM, a gateway), with or without a key. Changes apply immediately.
+
+Keys saved in the app live in one per-user file outside every project (`%APPDATA%\dagos\keys.json`
+on Windows, `~/.config/dagos/keys.json` elsewhere, owner-only; `DAGOS_CONFIG_DIR` moves it). They
+never enter the project, the database, the IR, or any API response: the app only ever shows a hint
+such as `sk-o…7890`. From a terminal, `dagos keys set openrouter` reads a key from standard input,
+and `dagos keys` / `dagos keys remove <provider>` list and remove them.
+
+Environment variables still work and always win over a saved key: `OPENROUTER_API_KEY`,
+`OPENAI_API_KEY`, `ZAI_API_KEY`. Custom endpoints are kept in `.dagos/providers.json`:
 
 ```json
 {"providers": [
   {"id": "ollama", "kind": "openai-compatible", "base_url": "http://localhost:11434/v1",
    "models": ["qwen2.5-coder:7b"]},
-  {"id": "zai", "kind": "openai-compatible", "base_url": "<your Z.ai base URL>",
-   "api_key_env": "ZAI_API_KEY", "models": ["<model id>"]}
+  {"id": "together", "kind": "openai-compatible", "base_url": "https://api.together.xyz/v1",
+   "api_key_env": "TOGETHER_API_KEY", "models": ["<model id>"]}
 ]}
 ```
 
-API keys are only read from the environment variable named by `api_key_env`; DAGOS never stores
-them. Then, for example:
+Then, for example:
 
 ```bash
 cargo run -p dagos -- run "Summarize the open tasks" --provider openrouter --model <model id>
 ```
 
-### A model-backed Jev (optional)
+### Jev: offline by default, better with a model
 
-Jev defaults to an offline policy classifier. To let a model classify context instead, name a
-configured provider and model, either in the environment:
+Jev decides each run's active context: which durable nodes the model sees. The offline policy
+classifier always works. To let a model classify instead, choose **Jev → Model** in the app, or set
+`"jev": {"provider": "openrouter", "model": "<model id>"}` in `.dagos/providers.json`, or
+`DAGOS_JEV_PROVIDER` and `DAGOS_JEV_MODEL` (the environment wins). A small, fast model is plenty.
 
-```bash
-export OPENROUTER_API_KEY=<key>
-export DAGOS_JEV_PROVIDER=openrouter DAGOS_JEV_MODEL=<model id>
-```
-
-or in `.dagos/providers.json` as `"jev": {"provider": "openrouter", "model": "<model id>"}` (the
-environment wins). The model only classifies: it receives the `kiss.jev-request.v1` document and
-must answer with one `kiss.jev-context.v1` object. Anything else (plans, prose, unknown nodes, extra
-fields) fails the run with `jev_invalid_output` before inference starts, and the DAG is unchanged.
-Each run's `jev.requested` event records which classifier was used, e.g. `openrouter-jev:<model>`.
+Runs never depend on the model Jev. If it fails, times out, has no key, or answers with anything but
+a valid `kiss.jev-context.v1` classification (plans, prose, unknown nodes, extra fields), the run
+records why (`jev.rejected`, `jev.fallback`) and the offline policy classifies the same request.
+The model's classification is applied as the context; it can never write to the DAG, answer, or
+choose providers. Each run's `jev.requested` event records which classifier was asked, e.g.
+`openrouter-jev:<model>`, and the inspector's Jev tab shows who classified and why.
 
 ### MCP (optional)
 

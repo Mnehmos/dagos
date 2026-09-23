@@ -27,6 +27,7 @@
     <p class="tagline">DAG is durable state · active context is a temporary projection · IR is the provider boundary</p>
     <div class="topbar-actions">
       <span id="connection" class="connection" data-state="connecting" role="status" aria-live="polite">Connecting…</span>
+      <button id="settings-toggle" type="button" class="icon-button" aria-label="Providers, API keys, and Jev" title="Providers, API keys, and Jev (s)">⚙</button>
       <button id="theme-toggle" type="button" class="icon-button" aria-label="Change theme">◐</button>
       <button id="help-toggle" type="button" class="icon-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
     </div>
@@ -58,6 +59,7 @@
           <datalist id="config-models"></datalist>
           <label for="config-prompt">System prompt</label>
           <textarea id="config-prompt" rows="7"></textarea>
+          <p class="hint"><button id="config-manage" type="button" class="link">Manage providers and API keys…</button></p>
           <p class="hint">Applies to subsequent runs. Every run records the configuration it used, and changing provider or model never changes DAG semantics.</p>
           <div class="button-row">
             <button id="config-cancel" type="button">Cancel</button>
@@ -81,6 +83,17 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
+  <dialog id="settings" class="settings" aria-labelledby="settings-title">
+    <header class="settings-top">
+      <h2 id="settings-title">Providers &amp; keys</h2>
+      <button id="settings-close" type="button" class="icon-button" aria-label="Close settings">×</button>
+    </header>
+    <div class="settings-body">
+      <nav id="settings-nav" class="settings-nav" aria-label="Settings sections"></nav>
+      <section id="settings-detail" class="settings-detail" aria-live="polite"></section>
+    </div>
+  </dialog>
+
   <dialog id="help" class="help" aria-labelledby="help-title">
     <h2 id="help-title">Keyboard</h2>
     <dl class="shortcuts">
@@ -90,6 +103,7 @@
       <div><dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Conversation, Context, Jev, IR, Response, Events</dd></div>
       <div><dt><kbd>←</kbd> <kbd>→</kbd></dt><dd>Move between tabs</dd></div>
       <div><dt><kbd>c</kbd></dt><dd>Provider, model, system prompt</dd></div>
+      <div><dt><kbd>s</kbd></dt><dd>Providers, API keys, and Jev</dd></div>
       <div><dt><kbd>t</kbd></dt><dd>Theme: system, light, dark</dd></div>
       <div><dt><kbd>Esc</kbd></dt><dd>Close panels</dd></div>
     </dl>

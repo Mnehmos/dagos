@@ -4,6 +4,7 @@
 
 import { api, openStream } from "./api.js";
 import * as model from "./model.js";
+import { knownModels, openSettings } from "./settings.js";
 import * as view from "./view.js";
 
 const $ = (id) => document.getElementById(id);
@@ -327,8 +328,9 @@ function fillConfigForm() {
 }
 
 function fillModelSuggestions() {
-  const provider = state.overview?.providers.find((candidate) => candidate.id === $("config-provider").value);
-  $("config-models").innerHTML = (provider?.suggested_models ?? [])
+  const id = $("config-provider").value;
+  const provider = state.overview?.providers.find((candidate) => candidate.id === id);
+  $("config-models").innerHTML = [...new Set([...(provider?.suggested_models ?? []), ...knownModels(id)])]
     .map((modelId) => `<option value="${view.esc(modelId)}"></option>`)
     .join("");
 }
@@ -358,6 +360,16 @@ async function saveConfig(event) {
   } catch (error) {
     showError(error);
   }
+}
+
+function showSettings(section = null) {
+  if (state.configOpen) toggleConfig(false);
+  openSettings({
+    section,
+    defaults: state.overview?.run_defaults,
+    onChange: () => loadOverview().catch(showError),
+    notify: (message, { error = false } = {}) => (error ? showError(new Error(message)) : toast(message)),
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -402,6 +414,7 @@ function onClick(event) {
   else if (data.copy === "ir") copyIr();
   else if ("closeNode" in data) selectNode(null);
   else if (data.action === "recover") recover();
+  else if (data.action === "settings") showSettings(data.section || null);
   else if (data.action === "dismiss") {
     state.bannerDismissed = $("banner").dataset.kind === "warn" ? "stale" : state.bannerDismissed;
     hideBanner();
@@ -410,6 +423,7 @@ function onClick(event) {
 
 function onKeyDown(event) {
   if (event.key === "Escape") {
+    if ($("settings").open) return;
     if (state.configOpen) toggleConfig(false);
     else if (state.selectedNodeId) selectNode(null);
     return;
@@ -421,6 +435,7 @@ function onKeyDown(event) {
     setTab(TABS[(index + TABS.length) % TABS.length], { focus: true });
     return;
   }
+  if ($("settings").open || $("help").open) return;
   const typing = event.target.closest?.("input, textarea, select, [contenteditable]");
   if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
   if (/^[1-6]$/.test(event.key)) {
@@ -433,6 +448,7 @@ function onKeyDown(event) {
     j: () => moveRun(1),
     k: () => moveRun(-1),
     c: () => toggleConfig(),
+    s: () => showSettings(),
     t: () => cycleTheme(),
     "?": () => $("help").showModal(),
   };
@@ -462,6 +478,8 @@ function bind() {
     if (first) $("config-model").value = first;
   });
   $("theme-toggle").addEventListener("click", cycleTheme);
+  $("settings-toggle").addEventListener("click", () => showSettings());
+  $("config-manage").addEventListener("click", () => showSettings());
   $("help-toggle").addEventListener("click", () => $("help").showModal());
   $("help-close").addEventListener("click", () => $("help").close());
 }

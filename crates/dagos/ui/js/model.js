@@ -79,7 +79,7 @@ export function stageSummaries(detail) {
     message: excerpt(detail.message?.text ?? "", 42),
     carry: `${count(detail.carried)} carried`,
     jev: detail.classification
-      ? `${count(detail.classification.classifications)} labels`
+      ? `${count(detail.classification.classifications)} labels${detail.jev_fallback ? " · fallback" : ""}`
       : detail.failure?.rejected_stage === "jev"
         ? "output rejected"
         : "",

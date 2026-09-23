@@ -31,6 +31,10 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::inspect::{self, Overview, RunDetail};
+use crate::keys::KeyStore;
+use crate::providers::{
+    self, JevEntry, Origin, ProviderEntry, ProviderKind, ProviderSetting, Settings,
+};
 use crate::workspace::Workspace;
 
 /// Fans committed events out to live subscribers of `GET /api/stream`.
@@ -88,6 +92,11 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/config", put(update_config))
         .route("/api/recover", post(recover))
         .route("/api/stream", get(stream))
+        .route("/api/settings", get(settings))
+        .route("/api/settings/providers/{id}", put(save_provider).delete(remove_provider))
+        .route("/api/settings/providers/{id}/key", put(save_key).delete(remove_key))
+        .route("/api/settings/providers/{id}/check", post(check_provider))
+        .route("/api/settings/jev", put(save_jev).delete(clear_jev))
         .layer(middleware::from_fn_with_state(state.clone(), guard_host))
         .with_state(state)
 }
@@ -135,6 +144,7 @@ const ASSETS: &[(&str, &str, &str)] = &[
     ("js/api.js", "text/javascript; charset=utf-8", include_str!("../ui/js/api.js")),
     ("js/model.js", "text/javascript; charset=utf-8", include_str!("../ui/js/model.js")),
     ("js/view.js", "text/javascript; charset=utf-8", include_str!("../ui/js/view.js")),
+    ("js/settings.js", "text/javascript; charset=utf-8", include_str!("../ui/js/settings.js")),
 ];
 
 fn asset_response(path: &str) -> Response {
@@ -229,7 +239,8 @@ async fn start_run(
     if let Some(prompt) = request.system_prompt {
         config.system_prompt = prompt;
     }
-    let started = state.workspace.runtime.start(&state.workspace.project.id, message, &config)?;
+    let runtime = state.workspace.runtime();
+    let started = runtime.start(&state.workspace.project.id, message, &config)?;
     let run = started.run.clone();
     state.executing().insert(run.id.clone());
     let task_state = state.clone();
@@ -237,7 +248,7 @@ async fn start_run(
         let id = started.run.id.clone();
         // The outcome is recorded on the run and its events; a store failure leaves the run
         // `running`, where recovery will find it.
-        let _ = task_state.workspace.runtime.finish(started).await;
+        let _ = runtime.finish(started).await;
         task_state.executing().remove(&id);
     });
     Ok((StatusCode::ACCEPTED, Json(json!({"run": run}))))
@@ -261,15 +272,186 @@ async fn update_config(
         model_id: ModelId::parse(request.model_id).map_err(ApiError::bad_request)?,
         system_prompt: request.system_prompt,
     };
-    state.workspace.runtime.set_defaults(&state.workspace.project.id, &config)?;
+    state.workspace.runtime().set_defaults(&state.workspace.project.id, &config)?;
     Ok(Json(json!({"run_defaults": state.workspace.run_config()?})))
 }
 
 /// `POST /api/recover`: fails runs left `running` by a process that is gone.
 async fn recover(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
     let executing = state.executing().clone();
-    let recovered = state.workspace.runtime.recover_runs_except(&executing)?;
+    let recovered = state.workspace.runtime().recover_runs_except(&executing)?;
     Ok(Json(json!({"recovered": recovered})))
+}
+
+/// `GET /api/settings`: providers, key status (never keys), and the Jev.
+async fn settings(State(state): State<Arc<AppState>>) -> Json<Settings> {
+    Json(state.workspace.settings())
+}
+
+/// Applies a configuration edit, reloads the providers, and returns the new settings.
+fn edit(
+    state: &AppState,
+    change: impl FnOnce(&Workspace) -> Result<(), ApiError>,
+) -> Result<Json<Settings>, ApiError> {
+    let workspace = &state.workspace;
+    let _guard = workspace.edit_lock();
+    change(workspace)?;
+    workspace.reload().map_err(ApiError::BadRequest)?;
+    Ok(Json(workspace.settings()))
+}
+
+/// A provider shown in the settings, other than the built-in fake.
+fn configurable(workspace: &Workspace, id: &str) -> Result<ProviderSetting, ApiError> {
+    let id = ProviderId::parse(id).map_err(ApiError::bad_request)?;
+    let setting = workspace.settings().providers.into_iter().find(|setting| setting.id == id);
+    match setting {
+        Some(setting) if setting.origin == Origin::Builtin => {
+            Err(ApiError::BadRequest(format!("`{id}` is built in and needs no configuration")))
+        }
+        Some(setting) => Ok(setting),
+        None => Err(ApiError::NotFound(format!("no provider `{id}`"))),
+    }
+}
+
+fn key_store(workspace: &Workspace) -> Result<&KeyStore, ApiError> {
+    workspace.keys().ok_or_else(|| {
+        let message = "no user configuration directory to save keys in; set DAGOS_CONFIG_DIR";
+        ApiError::Conflict(message.into())
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct KeyRequest {
+    key: String,
+}
+
+/// `PUT /api/settings/providers/{id}/key`: saves a key for this user.
+async fn save_key(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<KeyRequest>,
+) -> Result<Json<Settings>, ApiError> {
+    edit(&state, |workspace| {
+        let provider = configurable(workspace, &id)?;
+        key_store(workspace)?.set(&provider.id, &request.key).map_err(ApiError::BadRequest)
+    })
+}
+
+/// `DELETE /api/settings/providers/{id}/key`: forgets the saved key.
+async fn remove_key(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Settings>, ApiError> {
+    edit(&state, |workspace| {
+        let provider = configurable(workspace, &id)?;
+        key_store(workspace)?.remove(&provider.id).map_err(ApiError::Internal)?;
+        Ok(())
+    })
+}
+
+/// `PUT /api/settings/providers/{id}`: a custom OpenAI-compatible endpoint.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderRequest {
+    base_url: String,
+    #[serde(default)]
+    api_key_env: Option<String>,
+    #[serde(default)]
+    models: Vec<String>,
+    #[serde(default = "enabled")]
+    json_mode: bool,
+}
+
+fn enabled() -> bool {
+    true
+}
+
+async fn save_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<ProviderRequest>,
+) -> Result<Json<Settings>, ApiError> {
+    let id = ProviderId::parse(id).map_err(ApiError::bad_request)?;
+    let models = request
+        .models
+        .iter()
+        .map(|model| model.trim())
+        .filter(|model| !model.is_empty())
+        .map(ModelId::parse)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::bad_request)?;
+    let api_key_env =
+        request.api_key_env.map(|name| name.trim().to_owned()).filter(|name| !name.is_empty());
+    let entry = ProviderEntry {
+        id,
+        kind: ProviderKind::OpenaiCompatible,
+        base_url: request.base_url.trim().to_owned(),
+        api_key_env,
+        models,
+        json_mode: request.json_mode,
+    };
+    edit(&state, |workspace| {
+        providers::save_custom(workspace.dir(), entry).map_err(ApiError::BadRequest)
+    })
+}
+
+/// `DELETE /api/settings/providers/{id}`: removes a custom endpoint and its saved key.
+async fn remove_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<Settings>, ApiError> {
+    edit(&state, |workspace| {
+        let provider = configurable(workspace, &id)?;
+        if provider.origin != Origin::Custom {
+            return Err(ApiError::BadRequest(format!("`{id}` is a preset and cannot be removed")));
+        }
+        providers::remove_custom(workspace.dir(), &provider.id).map_err(ApiError::Internal)?;
+        // An overridden preset keeps its key; a custom endpoint's key goes with it.
+        let is_preset = providers::PRESETS.iter().any(|preset| preset.id == provider.id.as_str());
+        if let (false, Some(keys)) = (is_preset, workspace.keys()) {
+            keys.remove(&provider.id).map_err(ApiError::Internal)?;
+        }
+        Ok(())
+    })
+}
+
+/// `POST /api/settings/providers/{id}/check`: tests the connection and key, listing models.
+async fn check_provider(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let provider = configurable(&state.workspace, &id)?;
+    let endpoint = state.workspace.endpoint(&provider.id).ok_or_else(|| {
+        ApiError::BadRequest(format!("`{id}` has no API key yet; add one to connect"))
+    })?;
+    let models = endpoint.chat.check(endpoint.key_check).await.map_err(ApiError::BadGateway)?;
+    Ok(Json(json!({"ok": true, "models": models})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct JevChoice {
+    provider: String,
+    model: String,
+}
+
+/// `PUT /api/settings/jev`: classify context with a model; the offline policy stays the fallback.
+async fn save_jev(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<JevChoice>,
+) -> Result<Json<Settings>, ApiError> {
+    let model = ModelId::parse(request.model.trim()).map_err(ApiError::bad_request)?;
+    edit(&state, |workspace| {
+        let provider = configurable(workspace, &request.provider)?;
+        let entry = JevEntry { provider: provider.id, model };
+        providers::set_jev(workspace.dir(), Some(entry)).map_err(ApiError::Internal)
+    })
+}
+
+/// `DELETE /api/settings/jev`: classify with the offline policy only.
+async fn clear_jev(State(state): State<Arc<AppState>>) -> Result<Json<Settings>, ApiError> {
+    edit(&state, |workspace| providers::set_jev(workspace.dir(), None).map_err(ApiError::Internal))
 }
 
 /// `GET /api/stream`: server-sent events. Each `event` message carries one committed event as
@@ -299,6 +481,8 @@ enum ApiError {
     NotFound(String),
     Conflict(String),
     Internal(String),
+    /// An upstream endpoint failed a connection check.
+    BadGateway(String),
 }
 
 impl ApiError {
@@ -333,6 +517,7 @@ impl IntoResponse for ApiError {
             ApiError::NotFound(message) => (StatusCode::NOT_FOUND, message),
             ApiError::Conflict(message) => (StatusCode::CONFLICT, message),
             ApiError::Internal(message) => (StatusCode::INTERNAL_SERVER_ERROR, message),
+            ApiError::BadGateway(message) => (StatusCode::BAD_GATEWAY, message),
         };
         (status, Json(json!({"error": message}))).into_response()
     }

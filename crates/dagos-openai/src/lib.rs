@@ -73,12 +73,63 @@ impl OpenAiCompatible {
     }
 
     fn endpoint(&self) -> String {
-        format!("{}/chat/completions", self.config.base_url.trim_end_matches('/'))
+        self.url("/chat/completions")
+    }
+
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.config.base_url.trim_end_matches('/'))
+    }
+
+    /// Checks the connection: with `key_check` (a path such as OpenRouter's `/key`, for endpoints
+    /// whose model list is public) the key must be accepted, then `/models` must answer. Returns
+    /// the model IDs the endpoint lists, sorted.
+    pub async fn check(&self, key_check: Option<&str>) -> Result<Vec<String>, String> {
+        if let Some(path) = key_check {
+            self.get_json(path).await?;
+        }
+        let models = self.get_json("/models").await?;
+        let mut ids: Vec<String> = models
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|model| model.get("id")?.as_str().map(str::to_owned))
+            .collect();
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    async fn get_json(&self, path: &str) -> Result<Value, String> {
+        let url = self.url(path);
+        let mut http =
+            self.client.get(&url).header("accept", "application/json").timeout(CHECK_TIMEOUT);
+        if let Some(key) = &self.config.api_key {
+            http = http.bearer_auth(key);
+        }
+        let response =
+            http.send().await.map_err(|error| format!("request to {url} failed: {error}"))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!("HTTP {status} from {url}{}", detail(&body)));
+        }
+        serde_json::from_str(&body)
+            .map_err(|error| format!("unreadable answer from {url}: {error}"))
     }
 }
 
+/// How long a connection check may take.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(20);
+
 fn failed(message: String) -> ProviderError {
     ProviderError::Failed(message)
+}
+
+/// `: <excerpt>` of an error body, or nothing if it is empty.
+fn detail(body: &str) -> String {
+    let body = excerpt(body.trim());
+    if body.is_empty() { String::new() } else { format!(": {body}") }
 }
 
 /// At most the first 500 characters of an error body.
@@ -109,7 +160,7 @@ impl OpenAiCompatible {
         let status = response.status();
         if !status.is_success() {
             let body = response.text().await.unwrap_or_default();
-            return Err(format!("HTTP {status} from {endpoint}: {}", excerpt(&body)));
+            return Err(format!("HTTP {status} from {endpoint}{}", detail(&body)));
         }
 
         let mut events = SseDecoder::default();

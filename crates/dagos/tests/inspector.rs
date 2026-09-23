@@ -18,11 +18,11 @@ async fn workspace_with_history() -> (tempfile::TempDir, Workspace) {
     let workspace = Workspace::open(&dir, None, Duration::from_secs(10)).unwrap();
     let mut config = workspace.run_config().unwrap();
     for message in ["Where should durable state live?", "Add restart tests"] {
-        let run = workspace.runtime.run(&workspace.project.id, message, &config).await.unwrap();
+        let run = workspace.runtime().run(&workspace.project.id, message, &config).await.unwrap();
         assert_eq!(run.status, RunStatus::Completed);
     }
     config.model_id = ModelId::parse("fake-dangling-edge").unwrap();
-    let run = workspace.runtime.run(&workspace.project.id, "Link it", &config).await.unwrap();
+    let run = workspace.runtime().run(&workspace.project.id, "Link it", &config).await.unwrap();
     assert_eq!(run.status, RunStatus::Failed);
     (root, workspace)
 }

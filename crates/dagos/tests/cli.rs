@@ -8,18 +8,26 @@ use dagos_core::domain::{ModelId, ProviderId, RunConfig};
 use dagos_core::store::Store;
 use serde_json::Value;
 
-fn dagos(dir: &Path, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_dagos"))
+/// The `dagos` command for workspace `dir`, isolated from the real environment: no provider keys
+/// and a private user configuration directory next to the workspace.
+fn command(dir: &Path, args: &[&str]) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_dagos"));
+    command
         .arg("--dir")
         .arg(dir)
         .args(args)
+        .env("DAGOS_CONFIG_DIR", dir.parent().unwrap().join("user-config"))
         .env_remove("OPENROUTER_API_KEY")
         .env_remove("OPENAI_API_KEY")
+        .env_remove("ZAI_API_KEY")
         .env_remove("DAGOS_INFERENCE_TIMEOUT")
         .env_remove("DAGOS_JEV_PROVIDER")
-        .env_remove("DAGOS_JEV_MODEL")
-        .output()
-        .expect("dagos runs")
+        .env_remove("DAGOS_JEV_MODEL");
+    command
+}
+
+fn dagos(dir: &Path, args: &[&str]) -> Output {
+    command(dir, args).output().expect("dagos runs")
 }
 
 fn stdout(output: &Output) -> String {
@@ -167,4 +175,41 @@ fn runs_succeed_when_configured_mcp_servers_are_unavailable() {
     let broken = dagos(&dir, &["run", "hello"]);
     assert_eq!(broken.status.code(), Some(2));
     assert!(stderr(&broken).contains("invalid"), "{}", stderr(&broken));
+}
+
+#[test]
+fn keys_saved_from_the_cli_enable_providers_without_being_printed() {
+    let (_root, dir) = workspace();
+    let secret = "sk-or-cli-secret-9876";
+    let mut set = command(&dir, &["keys", "set", "openrouter"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::io::Write::write_all(
+        &mut set.stdin.take().unwrap(),
+        format!(
+            "{secret}
+"
+        )
+        .as_bytes(),
+    )
+    .unwrap();
+    let set = set.wait_with_output().unwrap();
+    assert!(set.status.success(), "{}", stderr(&set));
+    assert_eq!(json(&set)["hint"], "sk-o…9876");
+
+    let list = dagos(&dir, &["keys"]);
+    assert_eq!(json(&list)["saved"]["openrouter"]["hint"], "sk-o…9876");
+    let config = dagos(&dir, &["config"]);
+    let providers = json(&config)["providers"].to_string();
+    assert!(providers.contains("openrouter"), "{providers}");
+    for output in [&set, &list, &config] {
+        assert!(!stdout(output).contains(secret) && !stderr(output).contains(secret));
+    }
+
+    assert_eq!(json(&dagos(&dir, &["keys", "remove", "openrouter"]))["removed"], true);
+    assert!(!json(&dagos(&dir, &["config"]))["providers"].to_string().contains("openrouter"));
+    assert!(!dagos(&dir, &["keys", "set", "fake"]).status.success());
 }

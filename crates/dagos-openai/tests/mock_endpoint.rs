@@ -72,7 +72,9 @@ async fn read_request(socket: &mut TcpStream) -> Captured {
             let read = socket.read(&mut chunk).await.unwrap();
             buffer.extend_from_slice(&chunk[..read]);
         }
-        let body = serde_json::from_slice(&buffer[end + 4..end + 4 + length]).unwrap();
+        let bytes = &buffer[end + 4..end + 4 + length];
+        let body =
+            if bytes.is_empty() { Value::Null } else { serde_json::from_slice(bytes).unwrap() };
         return Captured { head, body };
     }
 }
@@ -354,4 +356,23 @@ async fn a_model_jev_that_plans_instead_of_classifying_is_rejected() {
         jev_runtime(&store, &base_url).run(&project, "Which storage?", &config).await.unwrap();
     assert_eq!(run.error_code, Some(ErrorCode::JevInvalidOutput));
     assert!(store.transaction(|tx| tx.context(&run.id)).unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn connection_checks_list_models_and_report_rejected_keys() {
+    let models = r#"{"data":[{"id":"z/model"},{"id":"a/model"},{"id":"a/model"},{"object":"x"}]}"#;
+    let (base_url, request) = mock("200 OK", "application/json", vec![models.into()]).await;
+    let listed = provider(&base_url, true).check(None).await.unwrap();
+    assert_eq!(listed, ["a/model", "z/model"]);
+    let captured = request.await.unwrap();
+    assert!(captured.head.starts_with("GET /v1/models HTTP/1.1"), "{}", captured.head);
+    assert!(captured.head.to_ascii_lowercase().contains("authorization: bearer test-key"));
+
+    // With a key check, a rejected key fails before the (public) model list is consulted.
+    let denied = r#"{"error":{"message":"No auth credentials found"}}"#;
+    let (base_url, request) =
+        mock("401 Unauthorized", "application/json", vec![denied.into()]).await;
+    let error = provider(&base_url, true).check(Some("/key")).await.unwrap_err();
+    assert!(error.contains("HTTP 401") && error.contains("No auth credentials"), "{error}");
+    assert!(request.await.unwrap().head.starts_with("GET /v1/key HTTP/1.1"));
 }

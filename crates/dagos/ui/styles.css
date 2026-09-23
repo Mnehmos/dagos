@@ -1805,6 +1805,382 @@ kbd {
   justify-content: flex-end;
 }
 
+/* ---------------------------------------------------------------- Settings: providers, keys, Jev */
+
+.settings {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  padding: 0;
+  width: min(900px, 94vw);
+  height: min(660px, 90vh);
+  box-shadow: 0 20px 50px rgb(0 0 0 / 25%);
+  overflow: hidden;
+}
+
+.settings[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.settings::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+
+.settings-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-top h2 {
+  font-size: 15px;
+}
+
+.settings-body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 230px 1fr;
+}
+
+.settings-nav {
+  overflow: auto;
+  padding: 14px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.settings-nav .section-label {
+  padding: 0 6px;
+  margin-top: 6px;
+}
+
+.settings-nav-list {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.settings-nav-item,
+.settings-nav-add {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-color: transparent;
+  background: transparent;
+  text-align: left;
+  padding: 7px 8px;
+}
+
+.settings-nav-item:hover,
+.settings-nav-add:hover {
+  background: var(--surface-3);
+}
+
+.settings-nav-item.selected,
+.settings-nav-add.selected {
+  background: var(--surface);
+  border-color: var(--border);
+  box-shadow: var(--shadow);
+}
+
+.settings-nav-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.settings-nav-add {
+  color: var(--accent-text);
+  margin-bottom: 10px;
+}
+
+.status-pill {
+  flex: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+.status-ready {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.status-needs-key {
+  color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.status-keyless {
+  color: var(--text-2);
+  background: var(--surface-3);
+}
+
+.settings-detail {
+  overflow: auto;
+  padding: 18px 22px 24px;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-head h3 {
+  font-size: 18px;
+}
+
+.settings-block {
+  display: grid;
+  gap: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-block h4 {
+  font-size: 13px;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.optional {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.settings-detail label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-top: 4px;
+}
+
+.settings-detail :is(input:not([type="radio"]):not([type="checkbox"]), select, textarea) {
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+}
+
+.settings-detail :is(input, select, textarea):focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  background: var(--surface);
+}
+
+.settings-detail input[name="key"],
+.settings-detail input[name="model"],
+.settings-detail textarea,
+.settings-detail input[name="base_url"] {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.key-form,
+.endpoint-form,
+.use-form {
+  display: grid;
+  gap: 6px;
+}
+
+.key-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.key-row > input {
+  flex: 1;
+}
+
+.key-row > button {
+  flex: none;
+  white-space: nowrap;
+}
+
+.key-state p {
+  margin: 0;
+}
+
+.key-state > p:first-child {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.key-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ok);
+}
+
+.key-hint {
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-3);
+}
+
+.button-row.start {
+  justify-content: flex-start;
+  margin-top: 6px;
+}
+
+button.danger {
+  color: var(--bad);
+  border-color: color-mix(in srgb, var(--bad) 40%, transparent);
+}
+
+button.danger:hover,
+button.danger[data-armed] {
+  background: var(--bad-soft);
+}
+
+.check-result {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.check-result.ok {
+  color: var(--ok);
+}
+
+.check-result.error {
+  color: var(--bad);
+  overflow-wrap: anywhere;
+}
+
+.check-result.checking {
+  color: var(--text-3);
+}
+
+.callout-warn {
+  background: var(--warn-soft);
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+.callout-warn p {
+  margin: 0;
+}
+
+.callout-warn details {
+  margin-top: 6px;
+}
+
+.settings-detail fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-weight: 400 !important;
+  color: var(--text) !important;
+}
+
+.choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.choice input {
+  margin-top: 3px;
+}
+
+.choice .hint {
+  margin: 0;
+}
+
+.jev-model {
+  display: grid;
+  gap: 4px;
+  padding-left: 4px;
+}
+
+label.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 400;
+  color: var(--text-2);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.connect-card {
+  margin: 14px 0;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.connect-card p {
+  margin: 0;
+  flex: 1 1 260px;
+}
+
+@media (max-width: 680px) {
+  .settings-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+
+  .settings-nav {
+    max-height: 34vh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .key-row {
+    flex-wrap: wrap;
+  }
+}
+
 /* ---------------------------------------------------------------- Motion */
 
 @keyframes spin {

@@ -48,6 +48,10 @@ pub enum EventData {
     /// Jev's output violated the contract or the request and was discarded unapplied.
     #[serde(rename = "jev.rejected")]
     JevRejected { reason: String, output: String },
+    /// The requested Jev failed or was rejected, so the fallback classifier `jev_id` classifies
+    /// the same request instead. `reason` says why.
+    #[serde(rename = "jev.fallback")]
+    JevFallback { jev_id: String, reason: String },
     /// A node joined the run's active context.
     #[serde(rename = "context.added")]
     ContextAdded { node_id: NodeId },

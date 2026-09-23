@@ -19,8 +19,9 @@ use crate::context::{
     validate_classification,
 };
 use crate::domain::{
-    ConversationTurn, Emission, EmissionRef, Endpoint, ErrorCode, EventData, InferenceIr, IrTool,
-    NodeId, NodeType, ProjectId, ProviderId, Run, RunConfig, RunId,
+    ContextClassification, ConversationTurn, Emission, EmissionRef, Endpoint, ErrorCode, EventData,
+    InferenceIr, IrTool, JevRequest, NodeId, NodeType, ProjectId, ProviderId, Run, RunConfig,
+    RunId,
 };
 use crate::ir::{CompileError, compile};
 use crate::provider::{DeltaSink, InferenceProvider, InferenceRequest};
@@ -56,6 +57,7 @@ pub struct StartedRun {
 pub struct Runtime {
     store: Arc<Store>,
     jev: Arc<dyn JevClassifier>,
+    jev_fallback: Option<Arc<dyn JevClassifier>>,
     providers: BTreeMap<ProviderId, Arc<dyn InferenceProvider>>,
     tools: Vec<IrTool>,
     inference_timeout: Duration,
@@ -67,6 +69,7 @@ impl Runtime {
         Self {
             store,
             jev,
+            jev_fallback: None,
             providers: BTreeMap::new(),
             tools: Vec::new(),
             inference_timeout: DEFAULT_INFERENCE_TIMEOUT,
@@ -88,6 +91,14 @@ impl Runtime {
 
     pub fn with_inference_timeout(mut self, timeout: Duration) -> Self {
         self.inference_timeout = timeout;
+        self
+    }
+
+    /// Classifies with `fallback` whenever the primary Jev fails, times out, or is rejected, so a
+    /// model-backed Jev improves runs without being required for them. The fallback's output is
+    /// validated exactly like the primary's, and `jev.fallback` records why it was used.
+    pub fn with_jev_fallback(mut self, fallback: Arc<dyn JevClassifier>) -> Self {
+        self.jev_fallback = Some(fallback);
         self
     }
 
@@ -253,18 +264,44 @@ impl Runtime {
             tx.append_event(&run.id, EventData::JevRequested { jev_id, request: request.clone() })?;
             Ok::<_, StoreError>(request)
         })?;
-        let raw = tokio::time::timeout(self.jev_timeout, self.jev.classify(&request))
+        let failure = match self.classify_with(self.jev.as_ref(), &request).await {
+            Ok(classification) => return self.apply(run, &classification),
+            Err(failure) => failure,
+        };
+        let Some(fallback) = &self.jev_fallback else { return Err(failure) };
+        self.store.transaction(|tx| {
+            if let Some(evidence) = &failure.evidence {
+                tx.append_event(&run.id, (**evidence).clone())?;
+            }
+            let jev_id = fallback.id().to_owned();
+            tx.append_event(&run.id, EventData::JevFallback { jev_id, reason: failure.message })
+        })?;
+        let classification = self.classify_with(fallback.as_ref(), &request).await?;
+        self.apply(run, &classification)
+    }
+
+    /// One classification attempt by `jev`: under the deadline, then validated against the
+    /// contract and the request.
+    async fn classify_with(
+        &self,
+        jev: &dyn JevClassifier,
+        request: &JevRequest,
+    ) -> Result<ContextClassification, StageFailure> {
+        let raw = tokio::time::timeout(self.jev_timeout, jev.classify(request))
             .await
             .map_err(|_elapsed| {
                 let message = format!("no classification within {:?}", self.jev_timeout);
                 StageFailure::new(ErrorCode::JevFailed, message)
             })?
             .map_err(|error| StageFailure::new(ErrorCode::JevFailed, error.to_string()))?;
-        let classification = validate_classification(&request, &raw).map_err(|error| {
+        validate_classification(request, &raw).map_err(|error| {
             StageFailure::new(ErrorCode::JevInvalidOutput, format!("Jev output rejected: {error}"))
                 .with_evidence(EventData::JevRejected { reason: error.to_string(), output: raw })
-        })?;
-        self.store.transaction(|tx| apply_classification(tx, &run.id, &classification))?;
+        })
+    }
+
+    fn apply(&self, run: &Run, classification: &ContextClassification) -> Result<(), StageFailure> {
+        self.store.transaction(|tx| apply_classification(tx, &run.id, classification))?;
         Ok(())
     }
 

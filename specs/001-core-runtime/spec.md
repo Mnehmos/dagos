@@ -33,6 +33,8 @@ FR-017 Expose enough state for a basic inspector.
 FR-018 MCP is optional and not required for a basic run.
 FR-019 Invalid provider responses fail closed and create an error event.
 FR-020 Core state transitions have automated tests.
+FR-021 A model-backed Jev is optional: when it fails or its output is rejected, the run records why and the offline classifier classifies the same request.
+FR-022 Provider API keys can be managed in the app; saved keys live per user outside the project and never appear in the database, the IR, or API responses.
 
 ## Acceptance Scenarios
 1. Empty project + user message creates conversation state and a run.
@@ -41,6 +43,7 @@ FR-020 Core state transitions have automated tests.
 4. Valid structured emissions become durable DAG records.
 5. Malformed provider output creates an error and no invalid semantic mutation.
 6. A normal run works when MCP is unavailable.
+7. A normal run works when the configured model Jev is unavailable or misbehaves.
 
 ## Out of Scope
 Planning agents, autonomous loops, tool orchestration, provider routing, embeddings, vector databases, and complex memory policies.

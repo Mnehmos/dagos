@@ -248,7 +248,18 @@ function jevPanelHtml(detail) {
     )
     .join("");
   const rejected = detail.failure?.rejected_stage === "jev";
-  return `<p class="callout"><strong>Jev only classifies.</strong> It labels candidate nodes <em>active</em> or <em>inactive</em>, nothing else; the runtime applies those labels to this run's active context.</p>
+  const fallback = detail.jev_fallback;
+  return `<p class="callout"><strong>Jev decides the active context.</strong> It labels candidate nodes <em>active</em> or <em>inactive</em>, and the runtime applies those labels as this run's context. It cannot write to the DAG, answer, or choose providers.</p>
+    <dl class="facts compact"><div><dt>Classified by</dt><dd><code>${esc(fallback?.jev_id ?? detail.jev_id ?? "—")}</code>${fallback ? " (fallback)" : ""}</dd></div></dl>
+    ${
+      fallback
+        ? `<div class="callout callout-warn"><p><strong><code>${esc(fallback.from ?? "The model Jev")}</code> could not be used</strong>, so the offline policy classified instead: ${esc(fallback.reason)}</p>${
+            fallback.rejected_output != null
+              ? `<details><summary>Rejected output (never applied)</summary><pre class="json">${esc(fallback.rejected_output)}</pre></details>`
+              : ""
+          }</div>`
+        : ""
+    }
     ${rejected ? `<p class="callout callout-error">Jev's output was rejected: <code>${esc(detail.failure.rejected_reason)}</code>. Nothing was applied.</p>` : ""}
     ${
       view.candidates
@@ -335,9 +346,15 @@ function eventsPanelHtml(detail) {
 
 export function emptyInspectorHtml(overview) {
   const nodes = overview?.dag?.nodes?.length ?? 0;
+  const connected = (overview?.providers ?? []).some((provider) => provider.id !== "fake");
   return `<div class="welcome">
     <h2>Nothing to inspect yet</h2>
     <p>Send a message to start a run. With the <code>fake</code> provider everything works offline.</p>
+    ${
+      connected
+        ? ""
+        : `<div class="connect-card"><p><strong>Connect a model.</strong> Paste an OpenRouter, OpenAI, or Z.ai key — or add a local endpoint — and pick a model. Jev can use one too.</p><button type="button" class="primary" data-action="settings">Add an API key</button></div>`
+    }
     <ol class="flow" aria-label="The DAGOS pipeline">
       <li>message</li><li>Jev classifies context</li><li>active context</li><li>versioned IR</li>
       <li>provider</li><li>validated response</li><li>DAG emissions</li><li>events</li>
@@ -441,7 +458,7 @@ export function statusHtml(overview, connection) {
     mcp = `${capabilities.tools.length} tool(s)${failed ? `, ${failed} server(s) unavailable` : ""}`;
   }
   return `<dl class="facts compact">
-    <div><dt>Jev</dt><dd>${esc(overview?.jev ?? "…")}</dd></div>
+    <div><dt>Jev</dt><dd><button type="button" class="link" data-action="settings" data-section="jev" title="Choose how Jev classifies">${esc(overview?.jev ?? "…")}</button></dd></div>
     <div><dt>Providers</dt><dd>${esc((overview?.providers ?? []).map((provider) => provider.id).join(", ") || "…")}</dd></div>
     <div><dt>MCP</dt><dd>${esc(mcp)}</dd></div>
     <div><dt>Stream</dt><dd class="connection-${connection}">${esc(connectionLabel)}</dd></div>

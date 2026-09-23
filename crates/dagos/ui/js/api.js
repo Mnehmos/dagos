@@ -33,6 +33,14 @@ export const api = {
   start: (body) => request("POST", "/api/runs", body),
   saveConfig: (body) => request("PUT", "/api/config", body),
   recover: () => request("POST", "/api/recover"),
+  settings: () => request("GET", "/api/settings"),
+  saveKey: (id, key) => request("PUT", `/api/settings/providers/${encodeURIComponent(id)}/key`, { key }),
+  removeKey: (id) => request("DELETE", `/api/settings/providers/${encodeURIComponent(id)}/key`),
+  saveProvider: (id, body) => request("PUT", `/api/settings/providers/${encodeURIComponent(id)}`, body),
+  removeProvider: (id) => request("DELETE", `/api/settings/providers/${encodeURIComponent(id)}`),
+  checkProvider: (id) => request("POST", `/api/settings/providers/${encodeURIComponent(id)}/check`),
+  saveJev: (body) => request("PUT", "/api/settings/jev", body),
+  clearJev: () => request("DELETE", "/api/settings/jev"),
 };
 
 /**

@@ -8,10 +8,12 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use dagos_core::domain::{EventData, ModelId, ProviderId, RunConfig, RunStatus};
+use dagos_core::provider::FakeProvider;
 use dagos_core::store::EventListener;
 use serde_json::json;
 
 use dagos::inspect;
+use dagos::keys::{self, KeyStore};
 use dagos::server;
 use dagos::workspace::{self, Workspace};
 
@@ -54,12 +56,28 @@ enum Command {
         #[command(subcommand)]
         what: Option<Inspect>,
     },
+    /// Manage API keys saved for this user (an environment variable always wins).
+    Keys {
+        #[command(subcommand)]
+        action: Option<Keys>,
+    },
     /// Serve the inspection API on a local port.
     Serve {
         /// Address to bind; loopback by default so the workspace stays local.
         #[arg(long, default_value = "127.0.0.1:7420")]
         address: String,
     },
+}
+
+/// Saved API key actions.
+#[derive(Debug, Subcommand)]
+enum Keys {
+    /// Where keys are saved and which providers have one (the default). Never prints keys.
+    List,
+    /// Save a key for a provider, read from standard input so it stays out of shell history.
+    Set { provider: String },
+    /// Remove the saved key for a provider.
+    Remove { provider: String },
 }
 
 /// What to inspect. Runs are named by ID or `latest`.
@@ -142,6 +160,43 @@ impl Selection {
     }
 }
 
+fn keys(action: Keys) -> Result<ExitCode, String> {
+    let store = KeyStore::for_user(|name| std::env::var(name).ok())
+        .ok_or("no user configuration directory; set DAGOS_CONFIG_DIR")?;
+    let provider = |id: &str| {
+        let id = ProviderId::parse(id).map_err(|error| error.to_string())?;
+        if id.as_str() == FakeProvider::ID {
+            return Err("the fake provider needs no key".to_owned());
+        }
+        Ok(id)
+    };
+    let report = match action {
+        Keys::List => {
+            let saved: serde_json::Map<_, _> = store
+                .load()?
+                .iter()
+                .map(|(id, key)| (id.to_string(), json!({"hint": keys::hint(key)})))
+                .collect();
+            json!({"keys_file": store.path(), "saved": saved})
+        }
+        Keys::Set { provider: id } => {
+            let id = provider(&id)?;
+            let mut key = String::new();
+            std::io::stdin()
+                .read_line(&mut key)
+                .map_err(|error| format!("cannot read the key from standard input: {error}"))?;
+            store.set(&id, &key)?;
+            json!({"saved": id, "hint": keys::hint(keys::validate(&key)?)})
+        }
+        Keys::Remove { provider: id } => {
+            let id = provider(&id)?;
+            json!({"removed": store.remove(&id)?, "provider": id})
+        }
+    };
+    println!("{}", serde_json::to_string_pretty(&report).expect("report serializes"));
+    Ok(ExitCode::SUCCESS)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -174,12 +229,12 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
                 let config =
                     args.selection.apply(workspace.run_config().map_err(|e| e.to_string())?)?;
                 workspace
-                    .runtime
+                    .runtime()
                     .set_defaults(&workspace.project.id, &config)
                     .map_err(|e| e.to_string())?;
             }
             let providers: Vec<_> = workspace
-                .runtime
+                .runtime()
                 .providers()
                 .map(|provider| json!({"id": provider.id(), "suggested_models": provider.suggested_models()}))
                 .collect();
@@ -195,7 +250,7 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
         Command::Recover => {
             let workspace = Workspace::open(&cli.dir, None, timeout)?;
             let recovered =
-                workspace.runtime.recover_interrupted_runs().map_err(|e| e.to_string())?;
+                workspace.runtime().recover_interrupted_runs().map_err(|e| e.to_string())?;
             println!("Marked {} interrupted run(s) as failed.", recovered.len());
             Ok(ExitCode::SUCCESS)
         }
@@ -205,6 +260,7 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
             println!("{}", serde_json::to_string_pretty(&document).expect("views serialize"));
             Ok(ExitCode::SUCCESS)
         }
+        Command::Keys { action } => keys(action.unwrap_or(Keys::List)),
         Command::Serve { address } => {
             let hub = server::EventHub::new();
             let workspace = Workspace::open(&cli.dir, Some(hub.listener()), timeout)?
@@ -264,6 +320,9 @@ async fn run(dir: &std::path::Path, args: RunArgs, timeout: Duration) -> Result<
                     EventData::InferenceDelta { text } => {
                         let _ = write!(stdout, "{text}");
                     }
+                    EventData::JevFallback { jev_id, reason } => {
+                        eprintln!("note: Jev fell back to {jev_id}: {reason}");
+                    }
                     _ => {}
                 }
             }
@@ -275,7 +334,7 @@ async fn run(dir: &std::path::Path, args: RunArgs, timeout: Duration) -> Result<
         .await?;
     let config = args.selection.apply(workspace.run_config().map_err(|e| e.to_string())?)?;
     let run = workspace
-        .runtime
+        .runtime()
         .run(&workspace.project.id, &args.message, &config)
         .await
         .map_err(|error| error.to_string())?;

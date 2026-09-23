@@ -68,6 +68,18 @@ pub struct FailureView {
     pub rejected_reason: Option<String>,
 }
 
+/// The requested Jev failed or was rejected and the fallback classified instead.
+#[derive(Debug, Clone, Serialize)]
+pub struct JevFallbackView {
+    /// The Jev that was asked first.
+    pub from: Option<String>,
+    /// The fallback that classified.
+    pub jev_id: String,
+    pub reason: String,
+    /// The first Jev's output, if it was rejected (never applied).
+    pub rejected_output: Option<String>,
+}
+
 /// Everything recorded about one run.
 #[derive(Debug, Serialize)]
 pub struct RunDetail {
@@ -77,7 +89,11 @@ pub struct RunDetail {
     pub context: Vec<ContextMember>,
     /// Nodes carried over from the previous run's context before Jev ran.
     pub carried: Vec<NodeId>,
+    /// The Jev asked to classify, e.g. `openrouter-jev:<model>` or `fake-jev`.
+    pub jev_id: Option<String>,
     pub jev_request: Option<JevRequest>,
+    /// Set when the fallback Jev classified instead of the one asked first.
+    pub jev_fallback: Option<JevFallbackView>,
     pub classification: Option<ContextClassification>,
     /// Membership changes Jev's classification caused.
     pub context_added: Vec<NodeId>,
@@ -112,8 +128,8 @@ pub fn overview(workspace: &Workspace) -> Result<Overview, StoreError> {
         Ok::<_, StoreError>((dag, runs))
     })?;
     let run_defaults = workspace.run_config()?;
-    let providers = workspace
-        .runtime
+    let runtime = workspace.runtime();
+    let providers = runtime
         .providers()
         .map(|provider| ProviderInfo {
             id: provider.id().clone(),
@@ -124,7 +140,7 @@ pub fn overview(workspace: &Workspace) -> Result<Overview, StoreError> {
         project: workspace.project.clone(),
         run_defaults,
         providers,
-        jev: workspace.runtime.jev().id().to_owned(),
+        jev: workspace.runtime().jev().id().to_owned(),
         capabilities: workspace.capabilities.clone(),
         dag,
         runs,
@@ -161,7 +177,9 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
         message: None,
         context,
         carried: Vec::new(),
+        jev_id: None,
         jev_request: None,
+        jev_fallback: None,
         classification: None,
         context_added: Vec::new(),
         context_removed: Vec::new(),
@@ -175,17 +193,34 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
         events: Vec::new(),
     };
     let mut rejection: Option<(&'static str, String)> = None;
+    let mut rejected_output: Option<String> = None;
     for event in &events {
         match &event.data {
             EventData::MessageRecorded { node_id, text } => {
                 detail.message = Some(MessageView { node_id: node_id.clone(), text: text.clone() });
             }
             EventData::ContextCarried { node_ids, .. } => detail.carried = node_ids.clone(),
-            EventData::JevRequested { request, .. } => detail.jev_request = Some(request.clone()),
+            EventData::JevRequested { jev_id, request } => {
+                detail.jev_id = Some(jev_id.clone());
+                detail.jev_request = Some(request.clone());
+            }
+            EventData::JevFallback { jev_id, reason } => {
+                // A rejection the fallback recovered from does not explain a later failure.
+                rejection = None;
+                detail.jev_fallback = Some(JevFallbackView {
+                    from: detail.jev_id.clone(),
+                    jev_id: jev_id.clone(),
+                    reason: reason.clone(),
+                    rejected_output: rejected_output.take(),
+                });
+            }
             EventData::JevClassified { classification } => {
                 detail.classification = Some(classification.clone());
             }
-            EventData::JevRejected { reason, .. } => rejection = Some(("jev", reason.clone())),
+            EventData::JevRejected { reason, output } => {
+                rejection = Some(("jev", reason.clone()));
+                rejected_output = Some(output.clone());
+            }
             EventData::ContextAdded { node_id } => detail.context_added.push(node_id.clone()),
             EventData::ContextRemoved { node_id } => detail.context_removed.push(node_id.clone()),
             EventData::IrCompiled { ir } => detail.ir = Some(ir.clone()),

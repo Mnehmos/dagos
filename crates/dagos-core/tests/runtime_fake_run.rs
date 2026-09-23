@@ -213,6 +213,56 @@ async fn jev_failures_stop_the_run_before_inference() {
 }
 
 #[tokio::test]
+async fn a_fallback_jev_keeps_runs_working_when_the_primary_fails() {
+    let plan = r#"{"schema":"kiss.jev-context.v1","classifications":[],"plan":["route to gpt"]}"#;
+    let cases = [
+        (FakeJev::unavailable("no API key for `openrouter`"), None),
+        (FakeJev::hanging(), None),
+        (FakeJev::scripted(plan), Some("route to gpt")),
+    ];
+    for (primary, rejected_output) in cases {
+        let (store, runtime, project) = setup(primary);
+        let runtime = runtime
+            .with_jev_timeout(Duration::from_millis(100))
+            .with_jev_fallback(Arc::new(FakeJev::new()));
+        let run = runtime.run(&project, "hi", &config("fake-echo")).await.unwrap();
+        assert_eq!(run.status, RunStatus::Completed, "{run:?}");
+
+        let events = events(&store, &run);
+        let timeline = timeline(&events);
+        let expected: &[&str] = if rejected_output.is_some() {
+            &["jev.requested", "jev.rejected", "jev.fallback", "jev.classified"]
+        } else {
+            &["jev.requested", "jev.fallback", "jev.classified"]
+        };
+        let start = timeline.iter().position(|kind| kind == "jev.requested").unwrap();
+        assert_eq!(&timeline[start..start + expected.len()], expected, "{timeline:?}");
+        let (jev_id, reason) = events
+            .iter()
+            .find_map(|event| match &event.data {
+                EventData::JevFallback { jev_id, reason } => Some((jev_id.clone(), reason.clone())),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(jev_id, "fake-jev");
+        assert!(!reason.is_empty());
+        if let Some(output) = rejected_output {
+            // The primary's plan is kept as evidence and never applied.
+            assert!(events.iter().any(|event| matches!(
+                &event.data,
+                EventData::JevRejected { output: raw, .. } if raw.contains(output)
+            )));
+        }
+    }
+
+    // A failing fallback still fails the run explicitly.
+    let (_, runtime, project) = setup(FakeJev::unavailable("down"));
+    let runtime = runtime.with_jev_fallback(Arc::new(FakeJev::unavailable("also down")));
+    let run = runtime.run(&project, "hi", &config("fake-echo")).await.unwrap();
+    assert_eq!(run.error_code, Some(ErrorCode::JevFailed));
+}
+
+#[tokio::test]
 async fn runs_that_cannot_start_create_nothing() {
     let (store, runtime, project) = setup(FakeJev::new());
     let mut unknown = config("gpt-4o");
