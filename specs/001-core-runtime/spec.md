@@ -11,6 +11,9 @@ US2: Requests, observations, decisions, artifacts, and conversation turns persis
 US3: Jev classifies durable nodes for active or removed context without deleting them.
 US4: A provider and model can be selected without changing DAGOS state semantics.
 US5: A developer can inspect DAG state, active context, events, IR, and structured response.
+US6: A developer works in chats grouped by project, and every chat draws on everything the project remembers.
+US7: A model can use MCP tools the developer permits, one call at a time, with risky calls brought to the developer.
+US8: Code a run changes is reviewed against the project's plain-English rules, and the model fixes or disputes each finding before the run ends.
 
 ## Functional Requirements
 FR-001 Persist DAG nodes and edges.
@@ -50,6 +53,11 @@ FR-027 Tool checks only ever make a call stricter than its policy. A call whose 
 6. A normal run works when MCP is unavailable.
 7. A normal run works when the configured model Jev is unavailable or misbehaves.
 8. A new conversation starts with empty active context yet can draw on the project's durable DAG; a continued conversation carries its context and recent turns.
+9. A tool call runs only when its policy, the tools it names, and the guard allow it; otherwise it asks the person or is refused, and every decision is an event.
+10. With a model Jev, a turn outside the recent window, from any chat of the project, reaches the IR when relevant; without one, runs behave exactly as before.
+11. A run that changes code with findings continues until a review is clean, the code stops changing, or the review limit is reached; a review never fails the run.
 
 ## Out of Scope
-Planning agents, autonomous loops, tool orchestration, provider routing, embeddings, vector databases, and complex memory policies.
+Planning agents, open-ended autonomous loops, provider routing, embeddings, vector databases, and summarizing memory policies.
+
+Two bounded loops are in scope by constitution amendment, both driven by fixed runtime rules and person-controlled tools: tool rounds (at most 8 per run) and review rounds (at most 3 per run). Neither lets Jev or the model decide to continue on their own.

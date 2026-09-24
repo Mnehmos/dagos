@@ -29,3 +29,29 @@ Enforced by the SQLite schema (`crates/dagos-core/src/store/migrations`):
 - Active-context rows reference nodes (never the reverse), have unique ordering per run, and exist
   only for `active` classifications.
 - Schema versions are tracked in `PRAGMA user_version`; migrations are append-only and transactional.
+
+Event types (the closed v1 set, in the order a run can produce them):
+`run.started`, `message.recorded`, `context.carried`, `jev.requested`, `jev.classified`,
+`jev.rejected`, `jev.fallback`, `context.added`, `context.removed`, `ir.compiled`,
+`inference.started`, `inference.delta`, `inference.completed`, `tool.requested`, `tool.decided`,
+`tool.completed`, `review.completed`, `response.validated`, `response.rejected`, `dag.node_created`,
+`dag.edge_created`, `run.completed`, `run.failed`. Tool output and review findings live only in
+events; they never become DAG state by themselves.
+
+What the IR carries (`contracts/inference-ir.schema.json`), and where each part comes from:
+- `task`, `context`: the run's message node and active context (DAG, through Jev's classification).
+- `recent_events`: the conversation's latest turns (8 by default), from events.
+- `recalled`: older turns of any chat of the project that Jev judged relevant, verbatim, from events.
+- `tools`: the offered tools Jev did not classify inactive for this run.
+- `tool_results`: this run's calls and outcomes; large earlier results Jev judged not needed for
+  the current step are replaced by an `omitted` note (the full output stays in `tool.completed`).
+- `review`: the latest review's findings while the model must address them.
+
+Workspace files (in the DAGOS directory unless noted), none of them in the database:
+- `dagos.sqlite3`: the store above. Migrations: `0001_initial`, `0002_run_defaults`,
+  `0003_conversations`.
+- `providers.json`: custom endpoints and the model Jev choice.
+- `mcp.json`: MCP servers and per-tool policies (`off`, `ask`, `allow`).
+- `lint.json`: lint rules, threshold, review limit, and whether the review loop is on.
+- Saved API keys live per user outside the project (`%APPDATA%/dagos/keys.json`,
+  `~/.config/dagos/keys.json`), never in the database, IR, or API responses.

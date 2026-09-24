@@ -45,8 +45,20 @@
 - [x] T030 Implement read-only state inspection.
 - [x] T031 Add restart/persistence tests.
 - [x] T032 Verify MCP is optional.
-- [ ] T033 Run Spec Kit analyze.
-- [ ] T034 Run implement/converge cycle.
+- [x] T033 Run Spec Kit analyze (`checklists/traceability.md`).
+- [x] T034 Run implement/converge cycle (plan, research, data model, quickstart, and scope reconciled).
 - [ ] T035 Tag v0.1.
 
-Dependency order: T001-T005 -> T006-T011 -> T012-T016 -> T017-T020 -> T021-T026 -> T027-T029 -> T030-T035.
+## Converged Scope
+- [x] T036 App UI: chat, inspector, DAG view, settings, keyboard use, light and dark.
+- [x] T037 Saved per-user keys, provider presets and custom endpoints.
+- [x] T038 Optional model Jev with offline fallback; TypeSafe's Jev through the Decisions API.
+- [x] T039 Conversations and projects (migration 0003).
+- [x] T040 MCP tool execution: policies, approvals, step limit, timeouts, Claude Desktop import.
+- [x] T041 Markdown replies and tool output; grouped tool calls.
+- [x] T042 Jev chooses each run's tools.
+- [x] T043 Automatic recall across chats and compaction of stale tool results.
+- [x] T044 Semantic lint (`dagos-lint`, `dagos lint`) and the bounded review loop.
+- [x] T045 Tool guard and meta-tool policies.
+
+Dependency order: T001-T005 -> T006-T011 -> T012-T016 -> T017-T020 -> T021-T026 -> T027-T029 -> T030-T034 -> T036-T045 -> T035.
