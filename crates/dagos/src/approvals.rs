@@ -192,14 +192,16 @@ impl ToolGate for Approvals {
         let answer = tokio::time::timeout(self.timeout, receiver).await;
         self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
         self.notes.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+        let why = note.as_ref().map(|note| format!(" ({note})")).unwrap_or_default();
         match answer {
             Ok(Ok(Answer::Allow)) => ToolDecision::Allow { by: ToolDecider::User, note },
-            Ok(Ok(Answer::Deny)) => {
-                ToolDecision::Deny { by: ToolDecider::User, reason: "the user denied it".into() }
-            }
+            Ok(Ok(Answer::Deny)) => ToolDecision::Deny {
+                by: ToolDecider::User,
+                reason: format!("the user denied it{why}"),
+            },
             Ok(Err(_)) | Err(_) => ToolDecision::Deny {
                 by: ToolDecider::Timeout,
-                reason: format!("nobody approved it within {:?}", self.timeout),
+                reason: format!("nobody approved it within {:?}{why}", self.timeout),
             },
         }
     }
