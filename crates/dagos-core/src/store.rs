@@ -88,7 +88,14 @@ pub type EventListener = Box<dyn Fn(&[Event]) + Send + Sync>;
 impl Store {
     /// Opens (creating if needed) the database at `path` and migrates it to [`SCHEMA_VERSION`].
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
-        Self::from_connection(Connection::open(path)?)
+        let conn = Connection::open(path)?;
+        // Every streamed delta is its own committed event, so commits must be cheap. In WAL mode
+        // with `synchronous = NORMAL`, a commit appends to the log without waiting for the disk;
+        // the database can never be corrupted, and at worst the last moments before a power
+        // failure are lost (a run cut off that way is failed as interrupted on restart).
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        Self::from_connection(conn)
     }
 
     /// Opens a private in-memory database, migrated to [`SCHEMA_VERSION`].
