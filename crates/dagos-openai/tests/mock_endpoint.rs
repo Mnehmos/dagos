@@ -101,6 +101,18 @@ fn provider(base_url: &str, json_mode: bool) -> OpenAiCompatible {
         api_key: Some("test-key".into()),
         models: vec![ModelId::parse("mock-1").unwrap()],
         json_mode,
+        native_tools: false,
+    })
+}
+
+fn native_provider(base_url: &str) -> OpenAiCompatible {
+    OpenAiCompatible::new(OpenAiCompatibleConfig {
+        id: ProviderId::parse("mock").unwrap(),
+        base_url: base_url.to_owned(),
+        api_key: Some("test-key".into()),
+        models: vec![],
+        json_mode: false,
+        native_tools: true,
     })
 }
 
@@ -269,6 +281,7 @@ async fn live_endpoint_completes_a_run() {
         api_key: std::env::var("DAGOS_LIVE_API_KEY").ok(),
         models: vec![],
         json_mode: std::env::var("DAGOS_LIVE_JSON_MODE").map_or(true, |value| value != "0"),
+        native_tools: std::env::var("DAGOS_LIVE_NATIVE_TOOLS").map_or(true, |value| value != "0"),
     });
     let jev: Arc<dyn dagos_core::context::JevClassifier> =
         match std::env::var("DAGOS_LIVE_JEV_MODEL") {
@@ -545,4 +558,111 @@ fn recall_searches_are_split_into_judge_sized_batches() {
     let missing = json!({"answers": {"run_000001": {"type": "noul", "noul": 0.5}}});
     let error = dagos_openai::relevance_from_decisions(&small[..2], &missing).unwrap_err();
     assert!(error.contains("no answer for run_000002"), "{error}");
+}
+
+/// Serves `responses` to consecutive connections, one each; returns the base URL and the
+/// captured requests.
+async fn mock_sequence(
+    responses: Vec<(&'static str, Vec<String>)>,
+) -> (String, JoinHandle<Vec<Captured>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let handle = tokio::spawn(async move {
+        let mut captured = Vec::new();
+        for (status, parts) in responses {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            captured.push(read_request(&mut socket).await);
+            let kind =
+                if status.starts_with("200") { "text/event-stream" } else { "application/json" };
+            let head =
+                format!("HTTP/1.1 {status}\r\ncontent-type: {kind}\r\nconnection: close\r\n\r\n");
+            socket.write_all(head.as_bytes()).await.unwrap();
+            for part in parts {
+                socket.write_all(part.as_bytes()).await.unwrap();
+            }
+            socket.shutdown().await.ok();
+        }
+        captured
+    });
+    (base_url, handle)
+}
+
+fn ir_with_tool() -> InferenceIr {
+    let mut ir = ir();
+    ir.tools = vec![dagos_core::domain::IrTool {
+        name: "ooda.exec_cli".into(),
+        description: "Run a command.".into(),
+        input_schema: json!({"type": "object", "properties": {"command": {"type": "string"}}})
+            .as_object()
+            .unwrap()
+            .clone(),
+    }];
+    ir
+}
+
+#[tokio::test]
+async fn native_tool_calls_come_back_as_a_response_document() {
+    let events = vec![
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Listing the files.\"}}]}\n\n".to_owned(),
+        format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1", "type": "function", "function": {"name": "ooda__exec_cli", "arguments": "{\"comm"}}]}}]})
+        ),
+        format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "and\": \"ls\"}"}}]}}]})
+        ),
+        "data: [DONE]\n\n".to_owned(),
+    ];
+    let (base_url, requests) = mock_sequence(vec![("200 OK", events)]).await;
+    let provider = native_provider(&base_url);
+    let model = ModelId::parse("mock-1").unwrap();
+    let ir = ir_with_tool();
+    let mut deltas = CollectDeltas::default();
+    let output =
+        provider.infer(InferenceRequest { model_id: &model, ir: &ir }, &mut deltas).await.unwrap();
+    let document: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(document["presentation"]["prose"], "Listing the files.");
+    assert_eq!(
+        document["tool_calls"],
+        json!([{"name": "ooda.exec_cli", "arguments": {"command": "ls"}}])
+    );
+    assert_eq!(deltas.0.concat(), "Listing the files.", "the note streams as prose");
+
+    let captured = requests.await.unwrap();
+    let body = &captured[0].body;
+    assert_eq!(body["tools"][0]["function"]["name"], "ooda__exec_cli");
+    assert_eq!(
+        body["tools"][0]["function"]["parameters"]["properties"]["command"]["type"],
+        "string"
+    );
+    let user: Value =
+        serde_json::from_str(body["messages"][1]["content"].as_str().unwrap()).unwrap();
+    assert!(user.get("tools").is_none(), "tools travel natively, not in the IR text");
+    assert!(body["messages"][0]["content"].as_str().unwrap().contains("tool-calling interface"));
+}
+
+#[tokio::test]
+async fn a_model_that_refuses_native_tools_gets_the_json_protocol_and_is_remembered() {
+    let refusal = r#"{"error":{"message":"No endpoints found that support tool use."}}"#.to_owned();
+    let (base_url, requests) = mock_sequence(vec![
+        ("404 Not Found", vec![refusal]),
+        ("200 OK", sse(&[DOCUMENT])),
+        ("200 OK", sse(&[DOCUMENT])),
+    ])
+    .await;
+    let provider = native_provider(&base_url);
+    let model = ModelId::parse("mock-1").unwrap();
+    let ir = ir_with_tool();
+    for _ in 0..2 {
+        let output = provider
+            .infer(InferenceRequest { model_id: &model, ir: &ir }, &mut CollectDeltas::default())
+            .await
+            .unwrap();
+        assert_eq!(output, DOCUMENT);
+    }
+    let captured = requests.await.unwrap();
+    assert!(captured[0].body.get("tools").is_some(), "native first");
+    assert!(captured[1].body.get("tools").is_none(), "then the JSON protocol");
+    assert!(captured[2].body.get("tools").is_none(), "and the refusal is remembered");
 }

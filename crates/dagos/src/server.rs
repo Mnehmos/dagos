@@ -564,6 +564,9 @@ struct ProviderRequest {
     models: Vec<String>,
     #[serde(default = "enabled")]
     json_mode: bool,
+    /// Offer tools through the endpoint's native tool calling.
+    #[serde(default = "enabled")]
+    native_tools: bool,
 }
 
 fn enabled() -> bool {
@@ -593,6 +596,7 @@ async fn save_provider(
         api_key_env,
         models,
         json_mode: request.json_mode,
+        native_tools: request.native_tools,
     };
     edit(&state, |workspace| {
         providers::save_custom(workspace.dir(), entry).map_err(ApiError::BadRequest)

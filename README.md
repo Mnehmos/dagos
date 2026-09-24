@@ -187,6 +187,11 @@ Two checks can make a call stricter than its policy, never looser:
   into a question, and the approval card says why ("Jev flagged it: destroys-data 0.93"); the flag is recorded with your
   decision. If the check cannot run, the call asks too. Without such a Jev, policies decide alone.
 
+Models call tools through their provider's native tool calling when the model supports it (the
+adapter turns those calls into the response's `tool_calls`); a model that refuses native tools gets
+DAGOS's JSON protocol instead, remembered per model. Set `"native_tools": false` on an endpoint in
+`.dagos/providers.json` to always use the JSON protocol.
+
 A run executes tools like this: a validated response lists `tool_calls`; DAGOS records each call
 (`tool.requested`), decides by policy or by asking you (`tool.decided`), runs permitted calls on the
 server (`tool.completed`), and sends the results back through the next IR's `tool_results`, up to 8

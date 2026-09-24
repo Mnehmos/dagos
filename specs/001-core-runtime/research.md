@@ -25,13 +25,14 @@ MCP is an optional capability boundary. A workspace may list stdio MCP servers i
 - **The tool-call boundary is the hook.** A model reaches files and the system only through tool calls, and DAGOS sees each call before it runs. The review loop remembers the files a call names there; the guard judges the call there. No git state or repository snapshots are needed.
 - **Checks only tighten.** Meta-tools inherit the strictest policy of the tools they name; the guard can only turn `allow` into a question. Deletion, secrets, and delegation to tools chosen at run time always ask, even when requested.
 - **A small extractor over a parser.** Function extraction masks strings and comments, finds headers with regular expressions, and matches braces or indentation (Rust, JavaScript, TypeScript, Python). It avoids native parser dependencies at the cost of edge cases a full parser would handle.
+- **Native tool calling behind the same contract.** The OpenAI-compatible adapter offers the IR's tools through the endpoint's `tools` field and turns native tool calls back into the response document's `tool_calls`; the runtime, gate, and guard cannot tell the difference, and providers stay interchangeable.
 - **Tolerating chat-model quirks without trusting them.** A whole-output code fence, or a short plain-text preamble before a response document that starts on its own line, is removed before validation; anything else still fails closed.
 
 ## Unresolved tradeoffs
 - The guard sees only what a call's arguments show: a shell command's own side effects are judged from its text, and files it changes without naming them are invisible to the review loop.
 - Jev's probabilities are calibrated but not infallible: the guard produced a harmless false positive (`outside-project` on a path inside the project written with backslashes), and lint findings can be wrong. Findings are handed back for the model to fix or dispute, never applied automatically.
 - The review cache and the reviewer's per-run file memory are in-process; a restart loses them (a restarted run is failed as interrupted anyway).
-- Tool calls use DAGOS's JSON response protocol, not providers' native tool calling; that keeps providers interchangeable but costs robustness with models that add text around the document.
+- Tool calls go through providers' native tool calling where the model takes it (falling back to DAGOS's JSON protocol for a model that refuses, remembered per model). Final replies still use the JSON document, since emissions need it, so a model that adds text around its final document is still handled by the preamble rule.
 - Findings a run ends with become `observation` nodes (`kind: "lint_finding"`) that DAGOS records
   itself, the one place durable state is written without a model emission. They are not removed
   when the code is later fixed; Jev's classification keeps stale ones out of context.

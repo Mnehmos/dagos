@@ -5,11 +5,14 @@
 //! request formatting stay inside this crate; DAGOS only sees the [`InferenceProvider`] interface,
 //! and the adapter only sees compiled IR.
 
+mod native;
 mod prose;
 mod protocol;
 mod sse;
 
+use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -20,6 +23,7 @@ use dagos_core::domain::{ModelId, ProviderId};
 use dagos_core::provider::{DeltaSink, InferenceProvider, InferenceRequest, ProviderError};
 use serde_json::Value;
 
+pub use native::{NativeProse, RawToolCall, native_document, native_request_body, refuses_tools};
 pub use prose::ProseExtractor;
 pub use protocol::{
     ACTIVE_THRESHOLD, RECALL_BATCH_CHARS, classification_from_decisions, decisions_body,
@@ -41,6 +45,9 @@ pub struct OpenAiCompatibleConfig {
     pub models: Vec<ModelId>,
     /// Request a JSON object response (`response_format: {"type": "json_object"}`).
     pub json_mode: bool,
+    /// Offer the IR's tools through the endpoint's native tool calling. A model that refuses
+    /// them is remembered and gets DAGOS's JSON tool protocol instead.
+    pub native_tools: bool,
 }
 
 impl fmt::Debug for OpenAiCompatibleConfig {
@@ -51,6 +58,7 @@ impl fmt::Debug for OpenAiCompatibleConfig {
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("models", &self.models)
             .field("json_mode", &self.json_mode)
+            .field("native_tools", &self.native_tools)
             .finish()
     }
 }
@@ -60,6 +68,8 @@ impl fmt::Debug for OpenAiCompatibleConfig {
 pub struct OpenAiCompatible {
     config: OpenAiCompatibleConfig,
     client: reqwest::Client,
+    /// Models that refused native tool calling on this endpoint.
+    refused_native: Arc<Mutex<BTreeSet<String>>>,
 }
 
 impl OpenAiCompatible {
@@ -68,7 +78,7 @@ impl OpenAiCompatible {
             .connect_timeout(Duration::from_secs(30))
             .build()
             .expect("HTTP client configuration is valid");
-        Self { config, client }
+        Self { config, client, refused_native: Arc::default() }
     }
 
     pub fn config(&self) -> &OpenAiCompatibleConfig {
@@ -146,13 +156,13 @@ fn excerpt(body: &str) -> &str {
 }
 
 impl OpenAiCompatible {
-    /// Streams one Chat Completions request and returns the concatenated content, calling
-    /// `on_content` with each content fragment as it arrives.
+    /// Streams one Chat Completions request and returns the concatenated content and any native
+    /// tool calls, calling `on_content` with each content fragment as it arrives.
     async fn stream_completion(
         &self,
         body: Value,
         mut on_content: impl FnMut(&str) + Send,
-    ) -> Result<String, String> {
+    ) -> Result<Completion, String> {
         let endpoint = self.endpoint();
         let mut http = self
             .client
@@ -173,6 +183,7 @@ impl OpenAiCompatible {
 
         let mut events = SseDecoder::default();
         let mut output = String::new();
+        let mut calls: Vec<RawToolCall> = Vec::new();
         'stream: while let Some(chunk) =
             response.chunk().await.map_err(|error| format!("stream interrupted: {error}"))?
         {
@@ -191,11 +202,34 @@ impl OpenAiCompatible {
                     output.push_str(content);
                     on_content(content);
                 }
+                let parts = event.pointer("/choices/0/delta/tool_calls").and_then(Value::as_array);
+                for part in parts.into_iter().flatten() {
+                    native::accumulate(&mut calls, part);
+                }
             }
         }
-        Ok(output)
+        Ok(Completion { content: output, tool_calls: calls })
+    }
+
+    fn refused(&self, model: &ModelId) -> bool {
+        let refused = self.refused_native.lock().unwrap_or_else(PoisonError::into_inner);
+        refused.contains(model.as_str())
+    }
+
+    fn remember_refusal(&self, model: &ModelId) {
+        let mut refused = self.refused_native.lock().unwrap_or_else(PoisonError::into_inner);
+        refused.insert(model.as_str().to_owned());
     }
 }
+
+/// A streamed completion: its text content and the native tool calls it made.
+#[derive(Debug, Default)]
+struct Completion {
+    content: String,
+    tool_calls: Vec<RawToolCall>,
+}
+
+impl OpenAiCompatible {}
 
 #[async_trait]
 impl InferenceProvider for OpenAiCompatible {
@@ -212,6 +246,31 @@ impl InferenceProvider for OpenAiCompatible {
         request: InferenceRequest<'_>,
         deltas: &mut dyn DeltaSink,
     ) -> Result<String, ProviderError> {
+        let native = self.config.native_tools
+            && !request.ir.tools.is_empty()
+            && !self.refused(request.model_id);
+        if native {
+            let (body, names) =
+                native_request_body(request.model_id, request.ir, self.config.json_mode);
+            let mut prose = NativeProse::default();
+            let outcome = self
+                .stream_completion(body, |content| {
+                    let text = prose.push(content);
+                    if !text.is_empty() {
+                        deltas.delta(&text);
+                    }
+                })
+                .await;
+            match outcome {
+                Ok(completion) => {
+                    return native_document(&completion.content, completion.tool_calls, &names)
+                        .map_err(failed);
+                }
+                // The model does not take native tools: remember, and use the JSON protocol.
+                Err(error) if refuses_tools(&error) => self.remember_refusal(request.model_id),
+                Err(error) => return Err(failed(error)),
+            }
+        }
         let body = request_body(request.model_id, request.ir, self.config.json_mode);
         let mut prose = ProseExtractor::default();
         self.stream_completion(body, |content| {
@@ -221,7 +280,7 @@ impl InferenceProvider for OpenAiCompatible {
             }
         })
         .await
-        .map(|output| unwrap_document(&output))
+        .map(|completion| unwrap_document(&completion.content))
         .map_err(failed)
     }
 }
@@ -253,7 +312,11 @@ impl JevClassifier for OpenAiCompatibleJev {
 
     async fn classify(&self, request: &JevRequest) -> Result<String, JevError> {
         let body = jev_request_body(&self.model, request, self.chat.config.json_mode);
-        self.chat.stream_completion(body, |_| {}).await.map_err(JevError)
+        self.chat
+            .stream_completion(body, |_| {})
+            .await
+            .map(|completion| completion.content)
+            .map_err(JevError)
     }
 }
 

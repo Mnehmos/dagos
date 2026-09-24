@@ -107,6 +107,10 @@ pub struct ProviderEntry {
     pub models: Vec<ModelId>,
     #[serde(default = "default_json_mode")]
     pub json_mode: bool,
+    /// Offer tools through the endpoint's native tool calling (DAGOS falls back to its JSON
+    /// protocol for a model that refuses them).
+    #[serde(default = "default_json_mode")]
+    pub native_tools: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
@@ -359,6 +363,7 @@ pub fn load(
                 api_key: Some(key),
                 models: Vec::new(),
                 json_mode: true,
+                native_tools: true,
             };
             configs.push((config, preset.key_check));
         }
@@ -393,6 +398,7 @@ pub fn load(
             api_key: key.map(|(_, key)| key),
             models: entry.models,
             json_mode: entry.json_mode,
+            native_tools: entry.native_tools,
         };
         configs.push((config, None));
     }
@@ -552,6 +558,7 @@ mod tests {
             api_key_env: None,
             models: vec![ModelId::parse("local").unwrap()],
             json_mode: false,
+            native_tools: true,
         };
         save_custom(dir.path(), entry.clone()).unwrap();
         save_custom(dir.path(), entry).unwrap();

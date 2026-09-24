@@ -65,6 +65,15 @@ pub fn user_message(ir: &InferenceIr) -> String {
     serde_json::to_string(ir).expect("IR serializes")
 }
 
+/// Added to the system message when the IR's tools are offered through native tool calling.
+pub(crate) const NATIVE_TOOLS: &str = "
+
+Tools: in this conversation the tools are offered through the tool-calling interface instead of \
+the IR's `tools`. Call them there; DAGOS treats those calls exactly like `tool_calls` in the \
+document: it runs the calls the person permits and returns what each did in the next IR's \
+tool_results. While calling tools, any text you write is shown as a short note of what you are \
+doing. When you are done, call no tools and reply with the JSON document described above.";
+
 /// The streaming Chat Completions request body for `ir`.
 pub fn request_body(model_id: &ModelId, ir: &InferenceIr, json_mode: bool) -> Value {
     let mut body = json!({
