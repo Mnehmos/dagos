@@ -386,9 +386,13 @@ pub fn unwrap_document(output: &str) -> String {
     {
         return inner.to_owned();
     }
-    let Some(start) = trimmed.find('{') else { return output.to_owned() };
+    // The document starts at the first line that begins with `{`; the preamble before it may
+    // mention braces in prose (e.g. "returns `{}` on errors") but holds no such line.
+    let Some(start) = trimmed.match_indices("\n{").map(|(index, _)| index + 1).next() else {
+        return output.to_owned();
+    };
     let preamble = &trimmed[..start];
-    if start == 0 || preamble.contains('}') || preamble.chars().count() > MAX_PREAMBLE_CHARS {
+    if trimmed.starts_with('{') || preamble.chars().count() > MAX_PREAMBLE_CHARS {
         return output.to_owned();
     }
     let document = &trimmed[start..];
@@ -419,6 +423,8 @@ mod tests {
         let paraphrase =
             format!("I'll run a safe smoke test first, nothing destructive.\n{DOCUMENT}");
         assert_eq!(unwrap_document(&paraphrase), DOCUMENT, "a paraphrase of the prose is fine too");
+        let braces = format!("I'll write a loader that returns `{{}}` on errors.\n\n{DOCUMENT}");
+        assert_eq!(unwrap_document(&braces), DOCUMENT, "braces in the prose are still prose");
     }
 
     #[test]
