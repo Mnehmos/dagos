@@ -1,0 +1,10 @@
+{
+  "schema": "kiss.inference-ir.v1",
+  "system_prompt": "You are a careful coding assistant. Prefer small, tested changes.",
+  "task": {
+    "node_id": "node_000001",
+    "message": "Hello, DAGOS"
+  },
+  "context": [],
+  "recent_events": []
+}

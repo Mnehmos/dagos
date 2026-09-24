@@ -1,0 +1,78 @@
+{
+  "schema": "kiss.inference-ir.v1",
+  "system_prompt": "You are a careful coding assistant. Prefer small, tested changes.",
+  "task": {
+    "node_id": "node_000006",
+    "message": "Try the restart tests again"
+  },
+  "context": [
+    {
+      "node_id": "node_000002",
+      "type": "decision",
+      "payload": {
+        "text": "Store state in SQLite"
+      },
+      "relations": []
+    },
+    {
+      "node_id": "node_000003",
+      "type": "task",
+      "payload": {
+        "title": "Persist runs and events"
+      },
+      "relations": [
+        {
+          "type": "depends_on",
+          "to": "node_000002"
+        }
+      ]
+    },
+    {
+      "node_id": "node_000004",
+      "type": "conversation",
+      "payload": {
+        "role": "user",
+        "text": "Where should state live?"
+      },
+      "relations": []
+    },
+    {
+      "node_id": "node_000005",
+      "type": "conversation",
+      "payload": {
+        "role": "user",
+        "text": "Add restart tests"
+      },
+      "relations": []
+    }
+  ],
+  "recent_events": [
+    {
+      "run_id": "run_000001",
+      "type": "run.completed"
+    },
+    {
+      "run_id": "run_000002",
+      "type": "run.failed",
+      "error_code": "response_invalid",
+      "message": "response violates kiss://schemas/inference-response/v1: at /emissions/0: \"kind\" is a required property"
+    }
+  ],
+  "tools": [
+    {
+      "name": "read_file",
+      "description": "Read a file from the workspace.",
+      "input_schema": {
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      }
+    }
+  ]
+}

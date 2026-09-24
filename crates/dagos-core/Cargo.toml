@@ -1,0 +1,27 @@
+[package]
+name = "dagos-core"
+description = "DAGOS core runtime: durable DAG, Jev context classification, versioned IR, provider boundary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Boundary rule: this crate must never depend on HTTP stacks or provider SDKs.
+# Real inference adapters live in their own crates and implement the provider trait.
+
+[dependencies]
+async-trait = "0.1.92"
+jsonschema = { version = "0.57.0", default-features = false }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["macros", "sync", "time"] }
+uuid = { version = "1.26.1", features = ["v7"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["macros", "rt", "rt-multi-thread", "test-util", "time"] }

@@ -1,0 +1,233 @@
+# DAGOS
+
+A minimal DAG operating system for LLM coding workflows.
+
+```text
+user message → run → Jev classification → active context → versioned IR
+  → inference provider → structured JSON response → validated DAG emissions → durable DAG → events
+```
+
+- **DAG** — durable project state (SQLite).
+- **Jev** — a context classifier. It decides which DAG nodes are active; it never plans, routes, or acts.
+- **Active context** — a temporary, per-run projection of the DAG. Removing context never deletes a node.
+- **IR** — the versioned boundary between DAGOS and inference providers. Providers never see raw DAG records.
+- **Provider** — an interchangeable inference endpoint.
+- **Structured response** — validated JSON; presentation prose is kept apart from canonical emissions.
+- **Events** — the ordered, inspectable history of every run.
+
+The design lives in [`.specify/memory/constitution.md`](.specify/memory/constitution.md) and
+[`specs/001-core-runtime`](specs/001-core-runtime); machine contracts are in
+[`specs/001-core-runtime/contracts`](specs/001-core-runtime/contracts).
+
+## Quickstart (offline)
+
+```bash
+cargo run -p dagos -- init
+cargo run -p dagos -- run "Where should durable state live?"
+cargo run -p dagos -- run "Add restart tests"
+```
+
+The first run needs no network: it uses the deterministic fake Jev and the fake provider. Prose
+streams to stdout; each run records the user message, the Jev classification, the compiled IR,
+the provider output, and the validated emissions in `.dagos/dagos.sqlite3`.
+
+The fake provider's model ID selects a behaviour, which makes every failure mode reproducible:
+`fake-echo` (valid), `fake-malformed`, `fake-invalid-schema`, `fake-dangling-edge`, `fake-cycle`,
+`fake-timeout`, `fake-error`. Failed runs stay inspectable and never mutate the DAG:
+
+```bash
+cargo run -p dagos -- run "Try this" --model fake-malformed
+```
+
+`dagos config` shows or changes the provider, model, and system prompt used by subsequent runs
+(`--provider`, `--model`, `--system-prompt`, `--system-prompt-file`); `dagos run` accepts the same
+flags as one-off overrides. Each run records the configuration it actually used.
+
+### The app: projects, chats, and the inspector
+
+```bash
+cargo run -p dagos -- serve     # then open http://127.0.0.1:7420
+```
+
+The app works like a normal chat client, and every message is still a full DAGOS run:
+
+- **Projects** (top-left switcher, `p`) each own one durable DAG and their own provider, model,
+  and system prompt. Create and rename them there.
+- **Chats** (sidebar, `n` for a new one) are conversations inside a project. A chat carries its
+  active context from one turn to the next, and the IR gives the model the chat's recent turns
+  (`recent_events`: each earlier turn's request and reply, oldest first) so it reads like an
+  appended conversation. Only the latest 8 turns are sent, and nothing is summarized away: chats
+  organize work for people, but the project remembers everything. With a model Jev (TypeSafe's),
+  every run Jev judges each earlier turn of every chat in the project and the relevant ones are
+  recalled into the IR verbatim; in a long run it also leaves out large earlier tool results the
+  current step does not need (they come back when they matter again). The chat shows "recalled N"
+  and "N results left out" under a reply when that happened. Ask for everything in plain words
+  ("load all context") and Jev recognises it: that run loads every node and every earlier turn of
+  the project, fitted to the model's window, and the reply says "full context". A new chat starts with an empty context but Jev can still bring in any
+  durable node of the project. Chats are titled after their first message; rename one by clicking
+  its title, and archive it to hide it (its runs stay durable, and a new message restores it).
+- **Stop** (`Esc`) replaces Send while a reply is running: the run stops at its current step
+  (waiting for the model, a tool, your approval, or Jev) and fails as `cancelled`; everything it
+  recorded before stays inspectable.
+- **Chat / Inspect** (`v`) switches between the conversation and the run inspector: each turn's
+  pipeline, active context, Jev output, IR, validated response, and events. Every turn has an
+  **Inspect** link; `j`/`k` move between turns.
+
+From the terminal, `dagos run` continues the latest chat and `dagos run --new` starts a new one.
+
+### Real providers and API keys
+
+The easiest way is the app: run `dagos serve`, press **⚙** (or `s`), pick **OpenRouter**, **OpenAI**,
+or **Z.ai**, paste a key, and press **Save & test**. DAGOS checks the key, lists the provider's
+models, and lets you pick one for new runs. **+ Add endpoint** adds any other OpenAI-compatible
+server (Ollama, LM Studio, vLLM, a gateway), with or without a key. Changes apply immediately.
+
+Keys saved in the app live in one per-user file outside every project (`%APPDATA%\dagos\keys.json`
+on Windows, `~/.config/dagos/keys.json` elsewhere, owner-only; `DAGOS_CONFIG_DIR` moves it). They
+never enter the project, the database, the IR, or any API response: the app only ever shows a hint
+such as `sk-o…7890`. From a terminal, `dagos keys set openrouter` reads a key from standard input,
+and `dagos keys` / `dagos keys remove <provider>` list and remove them.
+
+Environment variables still work and always win over a saved key: `OPENROUTER_API_KEY`,
+`OPENAI_API_KEY`, `ZAI_API_KEY`. Custom endpoints are kept in `.dagos/providers.json`:
+
+```json
+{"providers": [
+  {"id": "ollama", "kind": "openai-compatible", "base_url": "http://localhost:11434/v1",
+   "models": ["qwen2.5-coder:7b"]},
+  {"id": "together", "kind": "openai-compatible", "base_url": "https://api.together.xyz/v1",
+   "api_key_env": "TOGETHER_API_KEY", "models": ["<model id>"]}
+]}
+```
+
+Then, for example:
+
+```bash
+cargo run -p dagos -- run "Summarize the open tasks" --provider openrouter --model <model id>
+```
+
+### Jev: offline by default, better with a model
+
+Jev decides each run's active context: which durable nodes the model sees. The offline policy
+classifier always works. To let a model classify instead, choose **Jev → Model** in the app, or set
+`"jev": {"provider": "openrouter", "model": "<model id>"}` in `.dagos/providers.json`, or
+`DAGOS_JEV_PROVIDER` and `DAGOS_JEV_MODEL` (the environment wins). On OpenRouter the recommended
+Jev is TypeSafe's `~typesafe/jev-latest`, a decisions model: DAGOS asks it one calibrated yes/no
+question per candidate node through OpenRouter's Decisions API (`/api/alpha/decisions`) and turns
+the answers into a `kiss.jev-context.v1` classification. Any other model classifies through Chat
+Completions; a small, fast one is plenty.
+
+Runs never depend on the model Jev. If it fails, times out, has no key, or answers with anything but
+a valid `kiss.jev-context.v1` classification (plans, prose, unknown nodes, extra fields), the run
+records why (`jev.rejected`, `jev.fallback`) and the offline policy classifies the same request.
+The model's classification is applied as the context; it can never write to the DAG, answer, or
+choose providers. Each run's `jev.requested` event records which classifier was asked, e.g.
+`openrouter-jev:<model>`, and the inspector's Jev tab shows who classified and why.
+
+### Semantic lint and the review loop
+
+Syntax linters cannot check meaning; this one does. A project's lint rules are plain-English
+sentences, "Swallows errors.", "Has a hidden side effect.", "Does too many jobs.", and 11 more by
+default. Jev (TypeSafe's) answers one calibrated yes/no question per rule for each function, all
+functions in parallel.
+
+- **The review loop.** A model reaches files only through tool calls, so before each permitted
+  call DAGOS remembers the project files it names (paths, and file names inside shell commands).
+  When the model replies without tool calls, the functions it changed are linted; findings at or
+  above the threshold go back to the model (`review` in the IR) and the run continues, until a
+  review is clean, the code stops changing, or three reviews have run. The chat shows each review
+  under the turn. A finding the model disagrees with is answered in prose, not "fixed".
+- **Rules** are edited in the app (**Settings → Review loop**: rules, hints, threshold, reviews per
+  run, on/off) and live in `.dagos/lint.json` (without it, the defaults apply):
+  `{"threshold": 0.7, "max_rounds": 3, "rules": [{"id": "swallows-errors", "text": "Swallows
+  errors.", "applies": "…", "except": "…"}]}`. `"enabled": false` turns the loop off.
+- **Open findings are remembered.** When a run ends with findings still open (disputed, unchanged,
+  or out of reviews), each becomes an observation node in the project DAG, once, so later runs in
+  any chat can pick them up.
+- **The Lint view** (`l`, next to Chat and Inspect) judges the files changed since the last commit,
+  or the files you name, and shows every judgment as a heatmap of functions × rules. Select a
+  function to see its source and each rule's probability; mark a finding **Not a problem here** and
+  the review loop and `dagos lint` skip it from then on (**Restore** undoes it).
+- **CI:** `dagos lint [files]` judges every function in the files (default: files changed since the
+  last commit) and exits 1 when a rule applies; `--json` prints every judgment.
+- Rust, JavaScript, TypeScript, and Python are read. Without a Jev that answers yes/no questions,
+  nothing is reviewed. Code files a run's calls change without naming them (e.g. a generator a
+  shell command runs) are found by modification time and judged whole. Answers are cached in
+  `.dagos/lint-cache.json`, so unchanged functions are never judged twice, across restarts too.
+
+### Tools: MCP servers (optional)
+
+DAGOS works without tools. With them, a model can act: read files, run commands, drive a browser.
+Tools come from MCP servers (stdio). Add one in the app under **⚙ → Tools → + Add MCP server**,
+or import the servers Claude Desktop already has (only command, arguments, and working directory
+are copied; environment values never are). They are stored in `.dagos/mcp.json`:
+
+```json
+{"servers": [{"id": "ooda", "command": "node", "args": ["C:/tools/ooda/dist/index.js"],
+              "cwd": "C:/tools/ooda", "policy": "off", "tools": {"read_file": "ask", "exec_cli": "ask"}}]}
+```
+
+**Jev decides which tools the model sees.** All enabled tools are offered to Jev each turn with a
+short description; Jev labels each one it needs `active` and the rest `inactive`, and only the
+tools it does not hide go into that turn's IR. TypeSafe's Jev answers one yes/no question per tool.
+Without a model Jev, every offered tool stays visible. Each turn shows `tools 5/93`, and the
+inspector's Jev tab lists every tool with its label.
+
+Every tool has a policy: **Off** (not offered to models), **Ask** (the default: the chat shows
+Allow once / Always allow / Deny before the call runs, and an unanswered call is denied after 10
+minutes), or **Allow** (runs without asking). Offer only what you need: each offered tool's
+description and schema go into every request.
+
+Two checks can make a call stricter than its policy, never looser:
+- **Meta-tools** (tools that run other tools, such as OODA's `batch_tools`) get the strictest policy
+  among themselves and every tool of the same server their arguments name: a batch that names an
+  Off tool is refused, one that names an Ask tool asks.
+- **The guard.** With a Jev that answers yes/no questions (TypeSafe's), every call about to run is
+  judged against nine risks, in the light of your request: changes data you did not ask to
+  change, changes the system, uses the network, changes files outside the project, stops other
+  processes, or controls the mouse/keyboard/screen; and, even when you asked for it, deletes data,
+  touches secrets, or hands work to tools chosen while it runs (e.g. `jev_dispatch`). A likely risk
+  (0.5 or more by default; **Settings → Tool guard** sets it, or turns the guard off) turns Allow
+  into a question, and the approval card says why ("Jev flagged it: destroys-data 0.93"); the flag is recorded with your
+  decision. If the check cannot run, the call asks too. Without such a Jev, policies decide alone.
+
+Models call tools through their provider's native tool calling when the model supports it (the
+adapter turns those calls into the response's `tool_calls`); a model that refuses native tools gets
+DAGOS's JSON protocol instead, remembered per model. Set `"native_tools": false` on an endpoint in
+`.dagos/providers.json` to always use the JSON protocol.
+
+A run executes tools like this: a validated response lists `tool_calls`; DAGOS records each call
+(`tool.requested`), decides by policy or by asking you (`tool.decided`), runs permitted calls on the
+server (`tool.completed`), and sends the results back through the next IR's `tool_results`, up to 8
+rounds per run. Tool output never becomes DAG state by itself; images are not passed to models and
+long text is cut. `dagos run` (no app to ask in) runs only `allow` tools. A server that is missing,
+crashes, hangs, or misbehaves is reported and skipped, and runs proceed without its tools.
+
+## Layout
+
+| path                  | role                                                                   |
+|-----------------------|------------------------------------------------------------------------|
+| `crates/dagos-core`   | domain, contracts, store, context (Jev), IR, provider trait, runtime   |
+| `crates/dagos-openai` | inference adapter for OpenAI-compatible endpoints (OpenRouter, Ollama) |
+| `crates/dagos-mcp`    | optional MCP tool discovery, compiled into IR capability descriptions  |
+| `crates/dagos`        | transport: CLI, workspace setup, inspection views, local HTTP API      |
+
+`dagos-core` never depends on HTTP stacks or provider SDKs; `crates/dagos-core/tests/boundaries.rs`
+enforces the layer rules. Real providers live in their own crates and implement the core's
+`InferenceProvider` trait.
+
+To check a real endpoint (opt-in, needs network and usually a key):
+
+```bash
+DAGOS_LIVE_BASE_URL=https://openrouter.ai/api/v1 DAGOS_LIVE_MODEL=<model> DAGOS_LIVE_API_KEY=<key> cargo test -p dagos-openai -- --ignored
+```
+
+Add `DAGOS_LIVE_JEV_MODEL=<model>` to classify context with a live model too.
+
+## Development
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all --check
+```

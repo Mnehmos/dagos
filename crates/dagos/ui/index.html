@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>DAGOS</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M12 2l10 10-10 10L2 12z' fill='%234f46e5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script type="module" src="/assets/js/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#center">Skip to the conversation</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path class="logo-edges" d="M6.2 7.6 11 16.4M17.8 7.6 13 16.4M7.8 6h8.4"></path>
+        <circle cx="5" cy="6" r="2.6"></circle>
+        <circle cx="19" cy="6" r="2.6"></circle>
+        <circle cx="12" cy="18" r="2.6"></circle>
+      </svg>
+      <span class="wordmark">DAGOS</span>
+      <span class="divider" aria-hidden="true">/</span>
+      <div class="project-switch">
+        <button id="project-toggle" type="button" class="project-button" aria-haspopup="menu" aria-expanded="false" aria-controls="project-menu" title="Switch or create projects (p)">
+          <span id="project-name" class="project-name">…</span><span class="caret" aria-hidden="true">▾</span>
+        </button>
+        <div id="project-menu" class="menu" hidden></div>
+      </div>
+    </div>
+    <div class="mode-toggle" role="tablist" aria-label="View">
+      <button id="mode-chat" type="button" role="tab" aria-selected="true" title="Chat (v)">Chat</button>
+      <button id="mode-inspect" type="button" role="tab" aria-selected="false" title="Inspect runs (v)">Inspect</button>
+      <button id="mode-lint" type="button" role="tab" aria-selected="false" title="Lint functions against the project's rules (l)">Lint</button>
+    </div>
+    <div class="topbar-actions">
+      <span id="connection" class="connection" data-state="connecting" role="status" aria-live="polite">Connecting…</span>
+      <button id="settings-toggle" type="button" class="icon-button" aria-label="Providers, API keys, and Jev" title="Providers, API keys, and Jev (s)">⚙</button>
+      <button id="theme-toggle" type="button" class="icon-button" aria-label="Change theme">◐</button>
+      <button id="help-toggle" type="button" class="icon-button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">?</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" role="alert" hidden></div>
+
+  <main class="layout">
+    <aside class="sidebar" aria-label="Chats">
+      <div class="sidebar-top">
+        <button id="new-chat" type="button" class="primary new-chat" title="New chat (n)">+ New chat</button>
+      </div>
+      <nav id="conversations" class="conversations" aria-label="Chats in this project"><p class="loading">Loading…</p></nav>
+      <footer id="status" class="status"></footer>
+    </aside>
+
+    <section id="center" class="center" tabindex="-1">
+      <div id="chat" class="chat">
+        <header id="chat-header" class="chat-header"></header>
+        <div id="thread-scroll" class="thread-scroll">
+          <div id="thread" class="thread" aria-live="polite"></div>
+        </div>
+        <div class="composer-wrap">
+          <section id="config-panel" class="config-panel" aria-label="Run configuration" hidden>
+            <form id="config-form">
+              <div class="config-grid">
+                <div>
+                  <label for="config-provider">Provider</label>
+                  <select id="config-provider"></select>
+                </div>
+                <div>
+                  <label for="config-model">Model</label>
+                  <input id="config-model" list="config-models" autocomplete="off" spellcheck="false" required>
+                  <datalist id="config-models"></datalist>
+                </div>
+              </div>
+              <label for="config-prompt">System prompt</label>
+              <textarea id="config-prompt" rows="5"></textarea>
+              <p class="hint">Applies to this project's next runs; every run records the configuration it used. <button id="config-manage" type="button" class="link">Manage providers and API keys…</button></p>
+              <div class="button-row">
+                <button id="config-cancel" type="button">Cancel</button>
+                <button type="submit" class="primary">Save</button>
+              </div>
+            </form>
+          </section>
+          <form id="composer" class="composer">
+            <label for="message" class="sr-only">Message</label>
+            <textarea id="message" rows="1" placeholder="Message DAGOS…" aria-describedby="composer-hint"></textarea>
+            <div class="composer-row">
+              <button id="config-toggle" type="button" class="config-chip" aria-expanded="false" aria-controls="config-panel" title="Provider, model, and system prompt (c)">
+                <span id="config-provider-chip">…</span><span class="chip-sep" aria-hidden="true">/</span><span id="config-model-chip">…</span>
+              </button>
+              <span id="composer-hint" class="hint">Enter sends · Shift+Enter adds a line</span>
+              <button id="stop" type="button" class="danger" hidden title="Stop the running reply (Esc)">Stop</button>
+              <button id="send" type="submit" class="primary">Send</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div id="inspect" class="inspect" hidden>
+        <div id="inspect-bar" class="inspect-bar"></div>
+        <section id="inspector" class="inspector" aria-label="Run inspector" tabindex="-1"></section>
+      </div>
+
+      <div id="lint" class="lint" hidden>
+        <section id="lint-view" class="lint-view" aria-label="Semantic lint" tabindex="-1"></section>
+      </div>
+    </section>
+
+    <aside id="dag" class="dag-panel" aria-label="Durable DAG"></aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="settings" class="settings" aria-labelledby="settings-title">
+    <header class="settings-top">
+      <h2 id="settings-title">Providers &amp; keys</h2>
+      <button id="settings-close" type="button" class="icon-button" aria-label="Close settings">×</button>
+    </header>
+    <div class="settings-body">
+      <nav id="settings-nav" class="settings-nav" aria-label="Settings sections"></nav>
+      <section id="settings-detail" class="settings-detail" aria-live="polite"></section>
+    </div>
+  </dialog>
+
+  <dialog id="help" class="help" aria-labelledby="help-title">
+    <h2 id="help-title">Keyboard</h2>
+    <dl class="shortcuts">
+      <div><dt><kbd>/</kbd></dt><dd>Write a message</dd></div>
+      <div><dt><kbd>n</kbd></dt><dd>New chat</dd></div>
+      <div><dt><kbd>Enter</kbd></dt><dd>Send</dd></div>
+      <div><dt><kbd>v</kbd></dt><dd>Chat or Inspect</dd></div>
+      <div><dt><kbd>l</kbd></dt><dd>Lint</dd></div>
+      <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next or previous chat (Inspect: turn)</dd></div>
+      <div><dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Inspector tabs</dd></div>
+      <div><dt><kbd>p</kbd></dt><dd>Projects</dd></div>
+      <div><dt><kbd>c</kbd></dt><dd>Provider, model, system prompt</dd></div>
+      <div><dt><kbd>s</kbd></dt><dd>Providers, API keys, and Jev</dd></div>
+      <div><dt><kbd>t</kbd></dt><dd>Theme: system, light, dark</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close panels; with none open, stop a running reply</dd></div>
+    </dl>
+    <form method="dialog"><button id="help-close" type="submit" class="primary">Close</button></form>
+  </dialog>
+</body>
+</html>

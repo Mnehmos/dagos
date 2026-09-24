@@ -2,14 +2,74 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "kiss://schemas/inference-response/v1",
   "title": "DAGOS Inference Response v1",
+  "description": "A provider's final output. presentation.prose is for people and never becomes canonical state. emissions are the only structured state a response can add to the DAG, and only after validation.",
   "type": "object",
   "required": ["schema", "presentation", "emissions"],
   "properties": {
     "schema": {"const": "kiss.inference-response.v1"},
-    "presentation": {"type": "object", "required": ["prose"], "properties": {"prose": {"type": "string"}}, "additionalProperties": false},
-    "emissions": {"type": "array", "items": {"type": "object"}},
-    "tool_calls": {"type": "array", "items": {"type": "object"}},
-    "metadata": {"type": "object"}
+    "presentation": {
+      "type": "object",
+      "required": ["prose"],
+      "properties": {"prose": {"type": "string"}},
+      "additionalProperties": false
+    },
+    "emissions": {
+      "description": "New durable nodes and edges. A node emission declares a local ref, unique within the response; an edge connects refs declared in this response or node_ids present in the IR.",
+      "type": "array",
+      "items": {"oneOf": [{"$ref": "#/$defs/node_emission"}, {"$ref": "#/$defs/edge_emission"}]}
+    },
+    "tool_calls": {
+      "description": "Requested tool invocations, by the names listed in the IR's tools. DAGOS runs each call the user permits and returns the results in the next IR's tool_results; a response without tool_calls ends the run.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "arguments"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "arguments": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "metadata": {
+      "description": "Provider-specific details such as token usage. Recorded, never interpreted.",
+      "type": "object"
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+      "not": {"pattern": "^node_"}
+    },
+    "endpoint": {
+      "anyOf": [
+        {"$ref": "#/$defs/ref"},
+        {"type": "string", "pattern": "^node_[0-9a-z]{1,64}$"}
+      ]
+    },
+    "node_emission": {
+      "type": "object",
+      "required": ["kind", "ref", "type", "payload"],
+      "properties": {
+        "kind": {"const": "node"},
+        "ref": {"$ref": "#/$defs/ref"},
+        "type": {"enum": ["task", "artifact", "observation", "decision", "result", "conversation"]},
+        "payload": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "edge_emission": {
+      "type": "object",
+      "required": ["kind", "from", "to", "type"],
+      "properties": {
+        "kind": {"const": "edge"},
+        "from": {"$ref": "#/$defs/endpoint"},
+        "to": {"$ref": "#/$defs/endpoint"},
+        "type": {"enum": ["depends_on", "produces", "observed_from", "related_to", "supersedes"]}
+      },
+      "additionalProperties": false
+    }
+  }
 }

@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "kiss://schemas/jev-request/v1",
+  "title": "DAGOS Jev Classification Request v1",
+  "description": "Everything Jev may consider when classifying context membership for one run: the run's user message, every candidate node of the project in creation order (oldest first), and the edges between them. The run's own message node is the run's task, not a candidate.",
+  "type": "object",
+  "required": ["schema", "message", "candidates", "edges"],
+  "properties": {
+    "schema": {"const": "kiss.jev-request.v1"},
+    "message": {"type": "string"},
+    "candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["node_id", "type", "payload", "in_context"],
+        "properties": {
+          "node_id": {"$ref": "#/$defs/node_id"},
+          "type": {"enum": ["task", "artifact", "observation", "decision", "result", "conversation"]},
+          "payload": {"type": "object"},
+          "in_context": {
+            "description": "Whether the node is in the active context carried over from the previous run.",
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "tools": {
+      "description": "Tools that could be exposed to the model for this run. Jev labels each one it needs (active) or does not need (inactive); only exposed tools reach the IR.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "description"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "description": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "type"],
+        "properties": {
+          "from": {"$ref": "#/$defs/node_id"},
+          "to": {"$ref": "#/$defs/node_id"},
+          "type": {"enum": ["depends_on", "produces", "observed_from", "related_to", "supersedes"]}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "node_id": {"type": "string", "pattern": "^node_[0-9a-z]{1,64}$"}
+  }
+}

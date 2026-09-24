@@ -11,6 +11,9 @@ US2: Requests, observations, decisions, artifacts, and conversation turns persis
 US3: Jev classifies durable nodes for active or removed context without deleting them.
 US4: A provider and model can be selected without changing DAGOS state semantics.
 US5: A developer can inspect DAG state, active context, events, IR, and structured response.
+US6: A developer works in chats grouped by project, and every chat draws on everything the project remembers.
+US7: A model can use MCP tools the developer permits, one call at a time, with risky calls brought to the developer.
+US8: Code a run changes is reviewed against the project's plain-English rules, and the model fixes or disputes each finding before the run ends.
 
 ## Functional Requirements
 FR-001 Persist DAG nodes and edges.
@@ -33,6 +36,13 @@ FR-017 Expose enough state for a basic inspector.
 FR-018 MCP is optional and not required for a basic run.
 FR-019 Invalid provider responses fail closed and create an error event.
 FR-020 Core state transitions have automated tests.
+FR-021 A model-backed Jev is optional: when it fails or its output is rejected, the run records why and the offline classifier classifies the same request.
+FR-022 Provider API keys can be managed in the app; saved keys live per user outside the project and never appear in the database, the IR, or API responses.
+FR-023 Runs belong to conversations inside a project: a conversation carries active context between its runs and gives the IR its recent turns (request and reply); all conversations of a project share its durable DAG. Conversations are renamed or archived, never deleted.
+FR-024 Jev may also classify tool candidates active or inactive per run; only tools it does not mark inactive are compiled into the IR. Tool permission remains with the tool policy and the person.
+FR-025 The IR carries only a conversation's most recent turns (8 by default); nothing is summarized away. Chats organize work for people, the project DAG is what agents remember: every run, a model Jev judges each earlier turn of every chat in the project (outside the window) for relevance to the message, and every turn it judges relevant reaches the IR whole as `recalled`: context is managed by relevance, never capped by a count. When a model's context window is known and everything relevant does not fit, each step's IR is fitted to it: the least relevant recalled turns go first, then earlier rounds' tool outputs, then the oldest chat turns. When Jev judges that the person's message asks for all available context (a yes/no question about that message alone), the run loads every node of the project and every earlier turn, fitted the same way, and records `context.expanded`. Within a run, before each step, Jev judges each large tool result from earlier rounds against the request and the model's latest step; results it judges not needed are replaced in the IR by a note and come back when judged relevant again. The latest round's results are always kept, and the full outputs stay in the event history. Without a model Jev that judges relevance, or when it fails, nothing is recalled and nothing is left out.
+FR-026 Runs review the code they change. Before each permitted tool call, DAGOS remembers the project files it names (paths, and file names inside commands); each time the model replies without tool calls, the functions of those files that are new or changed are judged by Jev against the project's plain-English rules (`.dagos/lint.json`, 14 defaults), one yes/no question per rule and function, in parallel and cached by content. Rules at or above the threshold (0.7 by default) are recorded as `review.completed` and handed back to the model in the IR's `review`; the run continues until a review is clean, the code stops changing, or `max_rounds` (3) reviews have run. Reviews never fail a run, and without a Jev that answers yes/no questions nothing is reviewed. `dagos lint` judges files on demand and exits 1 on findings, for CI. Findings still open when a run ends (disputed, unchanged, or out of reviews) are recorded once each as `observation` nodes (`kind: "lint_finding"`), so later runs in any chat can draw on them.
+FR-027 Tool checks only ever make a call stricter than its policy. A call whose arguments name other tools of its server gets the strictest policy among them (off refuses, ask asks). With a Jev that answers yes/no questions, every call about to run is judged against nine risks in the light of the user's request: changing data the request did not ask to change, changing the system, using the network, changing files outside the project, stopping other processes, and controlling the computer, which the request can excuse; and deleting data, touching secrets, and delegating to tools chosen at run time, which always need the person; a risk at 0.5 or more, or a check that cannot run, sends an allowed call to the person, the approval shows why, and the reason is recorded in `tool.decided`.
 
 ## Acceptance Scenarios
 1. Empty project + user message creates conversation state and a run.
@@ -41,6 +51,13 @@ FR-020 Core state transitions have automated tests.
 4. Valid structured emissions become durable DAG records.
 5. Malformed provider output creates an error and no invalid semantic mutation.
 6. A normal run works when MCP is unavailable.
+7. A normal run works when the configured model Jev is unavailable or misbehaves.
+8. A new conversation starts with empty active context yet can draw on the project's durable DAG; a continued conversation carries its context and recent turns.
+9. A tool call runs only when its policy, the tools it names, and the guard allow it; otherwise it asks the person or is refused, and every decision is an event.
+10. With a model Jev, a turn outside the recent window, from any chat of the project, reaches the IR when relevant; without one, runs behave exactly as before.
+11. A run that changes code with findings continues until a review is clean, the code stops changing, or the review limit is reached; a review never fails the run.
 
 ## Out of Scope
-Planning agents, autonomous loops, tool orchestration, provider routing, embeddings, vector databases, and complex memory policies.
+Planning agents, open-ended autonomous loops, provider routing, embeddings, vector databases, and summarizing memory policies.
+
+Two bounded loops are in scope by constitution amendment, both driven by fixed runtime rules and person-controlled tools: tool rounds (at most 8 per run) and review rounds (at most 3 per run). Neither lets Jev or the model decide to continue on their own.

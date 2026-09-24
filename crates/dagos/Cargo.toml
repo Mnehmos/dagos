@@ -1,0 +1,27 @@
+[package]
+name = "dagos"
+description = "DAGOS transport: command-line interface to the core runtime."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+async-trait = "0.1.92"
+axum = "0.8.9"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+dagos-core = { path = "../dagos-core" }
+dagos-lint = { path = "../dagos-lint" }
+dagos-mcp = { path = "../dagos-mcp" }
+dagos-openai = { path = "../dagos-openai" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+reqwest = { version = "0.13.5", default-features = false, features = ["json"] }
+tempfile = "3.27.0"
