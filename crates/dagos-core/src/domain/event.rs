@@ -68,6 +68,11 @@ pub enum EventData {
     /// the same request instead. `reason` says why.
     #[serde(rename = "jev.fallback")]
     JevFallback { jev_id: String, reason: String },
+    /// Jev judged that the user asks for all available context (`probability`), so this run's
+    /// context holds every node of the project and every earlier turn is recalled, fitted to the
+    /// model's window.
+    #[serde(rename = "context.expanded")]
+    ContextExpanded { probability: f64 },
     /// A node joined the run's active context.
     #[serde(rename = "context.added")]
     ContextAdded { node_id: NodeId },

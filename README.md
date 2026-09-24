@@ -61,7 +61,9 @@ The app works like a normal chat client, and every message is still a full DAGOS
   every run Jev judges each earlier turn of every chat in the project and the relevant ones are
   recalled into the IR verbatim; in a long run it also leaves out large earlier tool results the
   current step does not need (they come back when they matter again). The chat shows "recalled N"
-  and "N results left out" under a reply when that happened. A new chat starts with an empty context but Jev can still bring in any
+  and "N results left out" under a reply when that happened. Ask for everything in plain words
+  ("load all context") and Jev recognises it: that run loads every node and every earlier turn of
+  the project, fitted to the model's window, and the reply says "full context". A new chat starts with an empty context but Jev can still bring in any
   durable node of the project. Chats are titled after their first message; rename one by clicking
   its title, and archive it to hide it (its runs stay durable, and a new message restores it).
 - **Stop** (`Esc`) replaces Send while a reply is running: the run stops at its current step

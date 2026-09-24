@@ -72,6 +72,8 @@ pub struct TurnView {
     /// left out.
     pub recalled: usize,
     pub omitted_results: usize,
+    /// Whether the person asked for all context and this run loaded everything.
+    pub full_context: bool,
     /// What the turn showed, in order: each validated reply's prose and each tool call.
     pub items: Vec<TurnItem>,
     /// Prose streamed since the last validated reply, while the run is still running.
@@ -237,6 +239,8 @@ pub struct RunDetail {
     /// Membership changes Jev's classification caused.
     pub context_added: Vec<NodeId>,
     pub context_removed: Vec<NodeId>,
+    /// When the person asked for all context: Jev's probability that they did.
+    pub full_context: Option<f64>,
     /// Exactly what the provider received.
     pub ir: Option<InferenceIr>,
     /// Presentation prose as streamed (never canonical state).
@@ -350,6 +354,7 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
         tools_exposed: 0,
         recalled: 0,
         omitted_results: 0,
+        full_context: false,
         items: Vec::new(),
         streaming: String::new(),
     };
@@ -372,6 +377,7 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
                 view.tools_offered = request.tools.len();
             }
             EventData::JevFallback { .. } => view.jev_fallback = true,
+            EventData::ContextExpanded { .. } => view.full_context = true,
             EventData::IrCompiled { ir } => {
                 if first_ir {
                     view.tools_exposed = ir.tools.len();
@@ -498,6 +504,7 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
         classification: None,
         context_added: Vec::new(),
         context_removed: Vec::new(),
+        full_context: None,
         ir: None,
         streamed: String::new(),
         output: None,
@@ -517,6 +524,7 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
                 detail.message = Some(MessageView { node_id: node_id.clone(), text: text.clone() });
             }
             EventData::ContextCarried { node_ids, .. } => detail.carried = node_ids.clone(),
+            EventData::ContextExpanded { probability } => detail.full_context = Some(*probability),
             EventData::JevRequested { jev_id, request } => {
                 detail.jev_id = Some(jev_id.clone());
                 detail.jev_request = Some(request.clone());

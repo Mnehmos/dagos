@@ -98,6 +98,9 @@ function turnMetaHtml(turn) {
   if (turn.tools_offered) {
     parts.push(`<span title="Tools Jev exposed to the model this turn, of those offered">tools ${turn.tools_exposed}/${turn.tools_offered}</span>`);
   }
+  if (turn.full_context) {
+    parts.push(`<span class="meta-canonical" title="You asked for all context: every node of the project and every earlier turn were loaded, fitted to the model's window">full context</span>`);
+  }
   if (turn.recalled) {
     parts.push(`<span title="Earlier turns (from any chat of the project) Jev judged relevant and brought back into the model's context">recalled ${turn.recalled}</span>`);
   }

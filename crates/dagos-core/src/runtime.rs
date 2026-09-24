@@ -360,7 +360,14 @@ impl Runtime {
     ) -> Result<Run, StageFailure> {
         let classification = self.classify_context(run, task, message).await?;
         let tools = exposed_tools(&self.tools, &classification);
-        let recalled = self.recall_turns(run, message).await?;
+        let everything = self.wants_everything(message).await;
+        let recalled = match everything {
+            Some(probability) => {
+                self.store.transaction(|tx| expand_context(tx, run, task, probability))?;
+                self.recall_everything(run)?
+            }
+            None => self.recall_turns(run, message).await?,
+        };
         let budget = provider.context_window(&run.model_id).await.map(ir_budget);
         let mut latest_round = BTreeSet::new();
         let mut latest_step = String::new();
@@ -572,6 +579,45 @@ impl Runtime {
             Some(scores) => Ok(select_recalled(candidates, &scores)),
             None => Ok(Vec::new()),
         }
+    }
+
+    /// Asks Jev whether `message` asks for all available context rather than about something
+    /// specific; the probability when it judges so. Only the person's message is judged, never
+    /// tool output, and nothing is expanded without a Jev that answers yes/no questions.
+    async fn wants_everything(&self, message: &str) -> Option<f64> {
+        let question = crate::context::NoulQuestion {
+            key: "wants_everything".into(),
+            instructions: serde_json::json!({
+                "task": "Decide whether the user's message in `state.message` asks to load, use, \
+                         or see all available context (every earlier turn, chat, and note of the \
+                         project) rather than asking about something specific.",
+            }),
+            if_true: "The message asks for everything available, e.g. \"load all context\" or \
+                      \"use everything from all our chats\"."
+                .into(),
+            if_false: "The message asks about something specific, or does not ask for more \
+                       context at all."
+                .into(),
+        };
+        let state = serde_json::json!({"message": message});
+        let answer = tokio::time::timeout(self.jev_timeout, self.jev.decide(&state, &[question]))
+            .await
+            .ok()?
+            .ok()??;
+        answer.first().copied().filter(|p| (RECALL_THRESHOLD..=1.0).contains(p))
+    }
+
+    /// Every earlier turn of the project, newest ranked highest, for a run that asked for all
+    /// context; fitting to the model's window leaves out the oldest first.
+    fn recall_everything(&self, run: &Run) -> Result<Vec<(IrRecalledTurn, f64)>, StageFailure> {
+        let window = self.conversation_window;
+        let candidates = self.store.transaction(|tx| recall_candidates(tx, &run.id, window))?;
+        let count = candidates.len().max(1) as f64;
+        Ok(candidates
+            .into_iter()
+            .enumerate()
+            .map(|(index, candidate)| (candidate.turn, (index + 1) as f64 / count))
+            .collect())
     }
 
     /// Before a step, asks Jev which large tool results from earlier rounds of this run are still
@@ -863,6 +909,32 @@ fn record_findings(tx: &Tx<'_>, run: &Run, findings: &[IrFinding]) -> Result<(),
                 emission_ref: reference,
             },
         )?;
+    }
+    Ok(())
+}
+
+/// Puts every node of the project (except the task, which the IR carries as the task) into the
+/// run's active context, recording `context.expanded` and a `context.added` for each new member.
+fn expand_context(
+    tx: &Tx<'_>,
+    run: &Run,
+    task: &NodeId,
+    probability: f64,
+) -> Result<(), StoreError> {
+    let before = tx.context(&run.id)?;
+    let mut members: BTreeMap<NodeId, crate::domain::ContextSource> =
+        before.iter().map(|member| (member.node_id.clone(), member.source)).collect();
+    let mut added = Vec::new();
+    for node in tx.nodes(&run.project_id)? {
+        if node.id != *task && !members.contains_key(&node.id) {
+            members.insert(node.id.clone(), crate::domain::ContextSource::Jev);
+            added.push(node.id);
+        }
+    }
+    tx.replace_context(&run.id, &members.into_iter().collect::<Vec<_>>())?;
+    tx.append_event(&run.id, EventData::ContextExpanded { probability })?;
+    for node_id in added {
+        tx.append_event(&run.id, EventData::ContextAdded { node_id })?;
     }
     Ok(())
 }
