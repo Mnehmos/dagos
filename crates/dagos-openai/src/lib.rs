@@ -10,7 +10,7 @@ mod prose;
 mod protocol;
 mod sse;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -48,6 +48,9 @@ pub struct OpenAiCompatibleConfig {
     /// Offer the IR's tools through the endpoint's native tool calling. A model that refuses
     /// them is remembered and gets DAGOS's JSON tool protocol instead.
     pub native_tools: bool,
+    /// Look up each model's context window in the endpoint's model list (OpenRouter reports it),
+    /// so the runtime can fit each step's IR to it.
+    pub model_windows: bool,
 }
 
 impl fmt::Debug for OpenAiCompatibleConfig {
@@ -59,6 +62,7 @@ impl fmt::Debug for OpenAiCompatibleConfig {
             .field("models", &self.models)
             .field("json_mode", &self.json_mode)
             .field("native_tools", &self.native_tools)
+            .field("model_windows", &self.model_windows)
             .finish()
     }
 }
@@ -70,6 +74,8 @@ pub struct OpenAiCompatible {
     client: reqwest::Client,
     /// Models that refused native tool calling on this endpoint.
     refused_native: Arc<Mutex<BTreeSet<String>>>,
+    /// Each model's context window as the endpoint's model list reports it, once fetched.
+    windows: Arc<tokio::sync::OnceCell<BTreeMap<String, usize>>>,
 }
 
 impl OpenAiCompatible {
@@ -78,7 +84,7 @@ impl OpenAiCompatible {
             .connect_timeout(Duration::from_secs(30))
             .build()
             .expect("HTTP client configuration is valid");
-        Self { config, client, refused_native: Arc::default() }
+        Self { config, client, refused_native: Arc::default(), windows: Arc::default() }
     }
 
     pub fn config(&self) -> &OpenAiCompatibleConfig {
@@ -211,6 +217,25 @@ impl OpenAiCompatible {
         Ok(Completion { content: output, tool_calls: calls })
     }
 
+    /// Each listed model's context window (`context_length`, as OpenRouter reports it).
+    async fn model_windows(&self) -> BTreeMap<String, usize> {
+        let models = self.get_json("/models").await.unwrap_or_default();
+        models
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|model| {
+                let id = model.get("id")?.as_str()?.to_owned();
+                let window = model
+                    .get("context_length")
+                    .or_else(|| model.pointer("/top_provider/context_length"))
+                    .and_then(Value::as_u64)?;
+                Some((id, window as usize))
+            })
+            .collect()
+    }
+
     fn refused(&self, model: &ModelId) -> bool {
         let refused = self.refused_native.lock().unwrap_or_else(PoisonError::into_inner);
         refused.contains(model.as_str())
@@ -239,6 +264,17 @@ impl InferenceProvider for OpenAiCompatible {
 
     fn suggested_models(&self) -> Vec<ModelId> {
         self.config.models.clone()
+    }
+
+    async fn context_window(&self, model: &ModelId) -> Option<usize> {
+        if !self.config.model_windows {
+            return None;
+        }
+        let windows = self.windows.get_or_init(|| self.model_windows()).await;
+        windows
+            .get(model.as_str().trim_start_matches('~'))
+            .or_else(|| windows.get(model.as_str()))
+            .copied()
     }
 
     async fn infer(

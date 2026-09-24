@@ -15,11 +15,14 @@ async fn workspace_with_history() -> (tempfile::TempDir, Workspace) {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join(".dagos");
     workspace::init(&dir, Some("demo")).unwrap();
-    let workspace = Workspace::open(&dir, None, Duration::from_secs(10)).unwrap();
+    // A generous deadline: CI runners run many of these workspaces at once.
+    let workspace = Workspace::open_with_keys(&dir, None, Duration::from_secs(120), None).unwrap();
     let mut config = workspace.run_config().unwrap();
     for message in ["Where should durable state live?", "Add restart tests"] {
         let run = workspace.runtime().run(&workspace.project.id, message, &config).await.unwrap();
-        assert_eq!(run.status, RunStatus::Completed);
+        let events = workspace.store.transaction(|tx| tx.events(&run.id)).unwrap();
+        let last: Vec<_> = events.iter().rev().take(3).map(|event| &event.data).collect();
+        assert_eq!(run.status, RunStatus::Completed, "{:?}: {last:?}", run.error_code);
     }
     config.model_id = ModelId::parse("fake-dangling-edge").unwrap();
     let run = workspace.runtime().run(&workspace.project.id, "Link it", &config).await.unwrap();

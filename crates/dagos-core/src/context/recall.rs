@@ -106,13 +106,17 @@ pub fn recall_candidates(
     Ok(candidates)
 }
 
-/// The turns to recall: every one Jev judged at or above [`RECALL_THRESHOLD`], oldest first.
-pub fn select_recalled(candidates: Vec<RecallCandidate>, scores: &[f64]) -> Vec<IrRecalledTurn> {
+/// The turns to recall, with Jev's relevance: every one judged at or above
+/// [`RECALL_THRESHOLD`], oldest first.
+pub fn select_recalled(
+    candidates: Vec<RecallCandidate>,
+    scores: &[f64],
+) -> Vec<(IrRecalledTurn, f64)> {
     candidates
         .into_iter()
         .zip(scores)
         .filter(|(_, score)| **score >= RECALL_THRESHOLD)
-        .map(|(candidate, _)| candidate.turn)
+        .map(|(candidate, score)| (candidate.turn, *score))
         .collect()
 }
 

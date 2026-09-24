@@ -58,6 +58,12 @@ pub trait InferenceProvider: Send + Sync {
         request: InferenceRequest<'_>,
         deltas: &mut dyn DeltaSink,
     ) -> Result<String, ProviderError>;
+
+    /// How many tokens `model` takes in one request, if known. The runtime fits each step's IR
+    /// to it; `None` (the default) means no limit is known and nothing is fitted.
+    async fn context_window(&self, _model: &ModelId) -> Option<usize> {
+        None
+    }
 }
 
 /// Collects deltas in memory; useful for callers that do not persist streaming output.

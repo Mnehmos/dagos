@@ -188,7 +188,7 @@ async fn runs_can_wait_while_tool_servers_start() {
     workspace::init(&dir, Some("demo")).unwrap();
     let config = json!({"servers": [{"id": "files", "command": fixture(), "args": ["files"], "policy": "allow"}]});
     std::fs::write(dir.join("mcp.json"), config.to_string()).unwrap();
-    let workspace = Workspace::open(&dir, None, Duration::from_secs(10)).unwrap();
+    let workspace = Workspace::open_with_keys(&dir, None, Duration::from_secs(10), None).unwrap();
     assert!(workspace.tools_starting(), "servers are configured and not started yet");
     assert!(workspace.runtime().tools().is_empty());
 
@@ -203,6 +203,7 @@ async fn runs_can_wait_while_tool_servers_start() {
     let plain = tempfile::tempdir().unwrap();
     let plain_dir = plain.path().join(".dagos");
     workspace::init(&plain_dir, Some("plain")).unwrap();
-    let without = Workspace::open(&plain_dir, None, Duration::from_secs(10)).unwrap();
+    let without =
+        Workspace::open_with_keys(&plain_dir, None, Duration::from_secs(10), None).unwrap();
     assert!(!without.tools_starting(), "no servers configured: nothing to wait for");
 }

@@ -361,6 +361,7 @@ impl Runtime {
         let classification = self.classify_context(run, task, message).await?;
         let tools = exposed_tools(&self.tools, &classification);
         let recalled = self.recall_turns(run, message).await?;
+        let budget = provider.context_window(&run.model_id).await.map(ir_budget);
         let mut latest_round = BTreeSet::new();
         let mut latest_step = String::new();
         let mut omitted = BTreeSet::new();
@@ -373,13 +374,14 @@ impl Runtime {
                 omitted =
                     self.compact_tool_results(run, message, &latest_step, &latest_round).await?;
             }
-            let history = IrHistory {
-                window: self.conversation_window,
+            let step = Step {
                 recalled: &recalled,
                 omitted: &omitted,
+                latest_round: &latest_round,
                 review: review.as_ref(),
+                budget,
             };
-            let ir = self.compile_ir(run, task, &tools, history)?;
+            let ir = self.compile_ir(run, task, &tools, step)?;
             let raw = self.infer(run, &ir, provider).await?;
             let validated = validate_response(&raw, &ir).map_err(|error| {
                 StageFailure::new(ErrorCode::ResponseInvalid, format!("response rejected: {error}"))
@@ -558,7 +560,7 @@ impl Runtime {
         &self,
         run: &Run,
         message: &str,
-    ) -> Result<Vec<IrRecalledTurn>, StageFailure> {
+    ) -> Result<Vec<(IrRecalledTurn, f64)>, StageFailure> {
         let window = self.conversation_window;
         let candidates = self.store.transaction(|tx| recall_candidates(tx, &run.id, window))?;
         if candidates.is_empty() {
@@ -695,23 +697,80 @@ impl Runtime {
         Ok(())
     }
 
+    /// Compiles the step's IR and, when the model's window is known and everything relevant does
+    /// not fit, fits it: the least relevant recalled turns go first, then the outputs of earlier
+    /// rounds' tool calls (oldest first; the model can call again), then the oldest turns of the
+    /// chat. Nothing is left out while everything fits.
     fn compile_ir(
         &self,
         run: &Run,
         task: &NodeId,
         tools: &[IrTool],
-        history: IrHistory<'_>,
+        step: Step<'_>,
     ) -> Result<InferenceIr, StageFailure> {
+        let failed = |error: CompileError| match error {
+            CompileError::Contract(violation) => {
+                StageFailure::new(ErrorCode::IrInvalid, violation.to_string())
+            }
+            other => StageFailure::new(ErrorCode::Internal, other.to_string()),
+        };
         self.store.transaction(|tx| {
-            let ir =
-                compile_with(tx, &run.id, task, tools, history).map_err(|error| match error {
-                    CompileError::Contract(violation) => {
-                        StageFailure::new(ErrorCode::IrInvalid, violation.to_string())
+            // Recalled turns in chronological order, and the order they are left out in: least
+            // relevant first.
+            let mut kept: Vec<bool> = vec![true; step.recalled.len()];
+            let mut drop_order: Vec<usize> = (0..step.recalled.len()).collect();
+            drop_order.sort_by(|a, b| step.recalled[*a].1.total_cmp(&step.recalled[*b].1));
+            let mut drop_order = drop_order.into_iter();
+            let mut omitted = step.omitted.clone();
+            let mut window = self.conversation_window;
+            let mut exhausted = false;
+            loop {
+                let turns: Vec<IrRecalledTurn> = step
+                    .recalled
+                    .iter()
+                    .zip(&kept)
+                    .filter(|(_, kept)| **kept)
+                    .map(|((turn, _), _)| turn.clone())
+                    .collect();
+                let history =
+                    IrHistory { window, recalled: &turns, omitted: &omitted, review: step.review };
+                let ir = compile_with(tx, &run.id, task, tools, history).map_err(failed)?;
+                let size = serde_json::to_string(&ir).map_or(0, |text| text.len());
+                let over = step.budget.and_then(|budget| size.checked_sub(budget));
+                let Some(over) = over.filter(|_| !exhausted) else {
+                    // It fits, or nothing more can be left out: send it (a provider may refuse
+                    // what is still too large).
+                    tx.append_event(&run.id, EventData::IrCompiled { ir: ir.clone() })?;
+                    return Ok(ir);
+                };
+                // Leave out enough, by size, to get under the budget, then compile again.
+                let mut freed = 0;
+                while freed <= over {
+                    if let Some(index) = drop_order.next() {
+                        kept[index] = false;
+                        freed += step.recalled[index].0.text.len();
+                        continue;
                     }
-                    other => StageFailure::new(ErrorCode::Internal, other.to_string()),
-                })?;
-            tx.append_event(&run.id, EventData::IrCompiled { ir: ir.clone() })?;
-            Ok(ir)
+                    let earlier = ir.tool_results.iter().find(|result| {
+                        !step.latest_round.contains(&result.call_id)
+                            && !omitted.contains(&result.call_id)
+                            && result.output.is_some()
+                    });
+                    if let Some(result) = earlier {
+                        omitted.insert(result.call_id.clone());
+                        freed +=
+                            result.output.as_ref().map_or(0, |output| output.to_string().len());
+                        continue;
+                    }
+                    if window > 0 && !ir.recent_events.is_empty() {
+                        window = ir.recent_events.len() - 1;
+                        freed = over + 1;
+                        continue;
+                    }
+                    exhausted = true;
+                    break;
+                }
+            }
         })
     }
 
@@ -806,6 +865,29 @@ fn record_findings(tx: &Tx<'_>, run: &Run, findings: &[IrFinding]) -> Result<(),
         )?;
     }
     Ok(())
+}
+
+/// What one step's IR is made of, beyond the durable state.
+struct Step<'a> {
+    /// Recalled turns, oldest first, with Jev's relevance.
+    recalled: &'a [(IrRecalledTurn, f64)],
+    omitted: &'a BTreeSet<String>,
+    latest_round: &'a BTreeSet<String>,
+    review: Option<&'a IrReview>,
+    /// The most IR characters the model's window takes, if known.
+    budget: Option<usize>,
+}
+
+/// Tokens of a model's window kept free for the system message (protocol and schema) and the
+/// reply.
+const RESERVED_TOKENS: usize = 16_000;
+
+/// A conservative characters-per-token estimate for JSON-heavy IR.
+const CHARS_PER_TOKEN: usize = 3;
+
+/// The most IR characters a model with a window of `tokens` takes.
+fn ir_budget(tokens: usize) -> usize {
+    tokens.saturating_sub(RESERVED_TOKENS) * CHARS_PER_TOKEN
 }
 
 /// The reviews a run has had so far.

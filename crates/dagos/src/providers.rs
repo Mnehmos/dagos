@@ -364,6 +364,7 @@ pub fn load(
                 models: Vec::new(),
                 json_mode: true,
                 native_tools: true,
+                model_windows: preset.id == "openrouter",
             };
             configs.push((config, preset.key_check));
         }
@@ -399,6 +400,7 @@ pub fn load(
             models: entry.models,
             json_mode: entry.json_mode,
             native_tools: entry.native_tools,
+            model_windows: false,
         };
         configs.push((config, None));
     }

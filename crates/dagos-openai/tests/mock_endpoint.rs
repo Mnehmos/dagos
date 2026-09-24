@@ -102,6 +102,7 @@ fn provider(base_url: &str, json_mode: bool) -> OpenAiCompatible {
         models: vec![ModelId::parse("mock-1").unwrap()],
         json_mode,
         native_tools: false,
+        model_windows: false,
     })
 }
 
@@ -113,6 +114,7 @@ fn native_provider(base_url: &str) -> OpenAiCompatible {
         models: vec![],
         json_mode: false,
         native_tools: true,
+        model_windows: true,
     })
 }
 
@@ -282,6 +284,7 @@ async fn live_endpoint_completes_a_run() {
         models: vec![],
         json_mode: std::env::var("DAGOS_LIVE_JSON_MODE").map_or(true, |value| value != "0"),
         native_tools: std::env::var("DAGOS_LIVE_NATIVE_TOOLS").map_or(true, |value| value != "0"),
+        model_windows: true,
     });
     let jev: Arc<dyn dagos_core::context::JevClassifier> =
         match std::env::var("DAGOS_LIVE_JEV_MODEL") {
@@ -665,4 +668,26 @@ async fn a_model_that_refuses_native_tools_gets_the_json_protocol_and_is_remembe
     assert!(captured[0].body.get("tools").is_some(), "native first");
     assert!(captured[1].body.get("tools").is_none(), "then the JSON protocol");
     assert!(captured[2].body.get("tools").is_none(), "and the refusal is remembered");
+}
+
+#[tokio::test]
+async fn model_windows_come_from_the_model_list_once() {
+    let models = json!({"data": [
+        {"id": "openai/gpt-6-luna", "context_length": 400000},
+        {"id": "typesafe/jev-latest", "top_provider": {"context_length": 32000}},
+        {"id": "no-window"}
+    ]})
+    .to_string();
+    let (base_url, request) = mock("200 OK", "application/json", vec![models]).await;
+    let provider = native_provider(&base_url);
+    let window = |id: &str| {
+        let provider = provider.clone();
+        let model = ModelId::parse(id).unwrap();
+        async move { provider.context_window(&model).await }
+    };
+    assert_eq!(window("openai/gpt-6-luna").await, Some(400_000));
+    assert_eq!(window("~typesafe/jev-latest").await, Some(32_000), "the ~ alias is matched");
+    assert_eq!(window("no-window").await, None);
+    assert_eq!(window("unlisted").await, None, "answered from the list fetched once");
+    assert!(request.await.unwrap().head.starts_with("GET /v1/models"));
 }
