@@ -47,7 +47,7 @@
 - [x] T032 Verify MCP is optional.
 - [x] T033 Run Spec Kit analyze (`checklists/traceability.md`).
 - [x] T034 Run implement/converge cycle (plan, research, data model, quickstart, and scope reconciled).
-- [ ] T035 Tag v0.1.
+- [x] T035 Tag v0.1 (`v0.1.0`).
 
 ## Converged Scope
 - [x] T036 App UI: chat, inspector, DAG view, settings, keyboard use, light and dark.
