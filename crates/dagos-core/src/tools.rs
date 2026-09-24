@@ -24,8 +24,15 @@ pub struct ToolRequest {
 /// Whether a call may run, and who decided.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolDecision {
-    Allow { by: ToolDecider },
-    Deny { by: ToolDecider, reason: String },
+    /// `note` says why it needed a decision beyond its policy, e.g. a risk the guard flagged.
+    Allow {
+        by: ToolDecider,
+        note: Option<String>,
+    },
+    Deny {
+        by: ToolDecider,
+        reason: String,
+    },
 }
 
 /// What a tool returned. `is_error` means the tool reported a failure.
@@ -84,6 +91,6 @@ pub struct AllowAll;
 #[async_trait]
 impl ToolGate for AllowAll {
     async fn decide(&self, _run_id: &RunId, _request: &ToolRequest) -> ToolDecision {
-        ToolDecision::Allow { by: ToolDecider::Policy }
+        ToolDecision::Allow { by: ToolDecider::Policy, note: None }
     }
 }

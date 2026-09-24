@@ -229,6 +229,7 @@ async fn run(
     let mut detail = inspect::run_detail(&workspace.store, &id)?.ok_or_else(not_found)?;
     for call in &mut detail.tool_calls {
         call.pending = workspace.approvals().is_pending(&id, &call.call_id);
+        call.pending_note = workspace.approvals().note(&id, &call.call_id);
     }
     Ok(Json(detail))
 }
@@ -414,6 +415,7 @@ async fn conversation(
         for item in &mut turn.items {
             if let TurnItem::Tool(call) = item {
                 call.pending = approvals.is_pending(&turn.run.id, &call.call_id);
+                call.pending_note = approvals.note(&turn.run.id, &call.call_id);
             }
         }
     }

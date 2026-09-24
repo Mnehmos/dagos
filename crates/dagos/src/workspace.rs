@@ -14,6 +14,7 @@ use dagos_lint::{LINT_FILE, LintConfig, LintReviewer};
 use dagos_mcp::{Capabilities, McpConfig, McpPool};
 
 use crate::approvals::{APPROVAL_TIMEOUT, Approvals};
+use crate::guard::Guard;
 
 use crate::keys::KeyStore;
 use crate::providers::{self, Endpoint, Settings};
@@ -158,11 +159,15 @@ impl Workspace {
             let mcp = self.mcp.read().unwrap_or_else(PoisonError::into_inner);
             mcp.as_ref().map(|state| {
                 let runner: ToolRunner = (state.pool.clone(), self.approvals.clone());
+                self.approvals.set_tools(&state.capabilities.tools);
                 (state.capabilities.tools.clone(), runner)
             })
         };
         let live =
             build(&self.store, &self.dir, self.keys.as_ref(), self.inference_timeout, tools)?;
+        let guard =
+            Guard::new(live.runtime.shared_jev(), self.store.clone(), project_root(&self.dir));
+        self.approvals.set_guard(Some(Arc::new(guard)));
         *self.live.write().unwrap_or_else(PoisonError::into_inner) = live;
         Ok(())
     }

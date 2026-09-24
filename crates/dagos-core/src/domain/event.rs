@@ -89,7 +89,8 @@ pub enum EventData {
     /// A validated response asked for a tool call. DAGOS decides whether it runs.
     #[serde(rename = "tool.requested")]
     ToolRequested { call_id: String, name: String, arguments: Payload },
-    /// Whether a requested call runs, and who decided.
+    /// Whether a requested call runs, and who decided. `reason` says why a call was denied, or
+    /// why an allowed one needed a person (e.g. a risk the guard flagged).
     #[serde(rename = "tool.decided")]
     ToolDecided {
         call_id: String,

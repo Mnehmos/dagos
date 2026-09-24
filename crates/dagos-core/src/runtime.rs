@@ -436,7 +436,7 @@ impl Runtime {
             },
         };
         let (allowed, by, reason) = match decision {
-            ToolDecision::Allow { by } => (true, by, None),
+            ToolDecision::Allow { by, note } => (true, by, note),
             ToolDecision::Deny { by, reason } => (false, by, Some(reason)),
         };
         self.store.transaction(|tx| {

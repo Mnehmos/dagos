@@ -3145,3 +3145,9 @@ details.review-found {
   font-size: 12px;
   overflow-wrap: anywhere;
 }
+
+.approval-why {
+  flex-basis: 100%;
+  color: var(--warn);
+  font-size: 12px;
+}

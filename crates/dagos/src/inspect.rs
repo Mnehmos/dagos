@@ -114,6 +114,8 @@ pub struct ToolCallView {
     pub output: Option<serde_json::Value>,
     /// Whether a person is being asked to approve it right now (set by the server).
     pub pending: bool,
+    /// Why the pending call needs a person beyond its policy, e.g. risks the guard flagged.
+    pub pending_note: Option<String>,
 }
 
 /// The tool calls recorded in `events`, in order.
@@ -137,6 +139,7 @@ fn apply_tool_event(calls: &mut Vec<ToolCallView>, data: &EventData) -> bool {
             reason: None,
             output: None,
             pending: false,
+            pending_note: None,
         }),
         EventData::ToolDecided { call_id, allowed, by, reason } => {
             if let Some(call) = calls.iter_mut().find(|call| &call.call_id == call_id) {

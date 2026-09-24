@@ -21,6 +21,9 @@ const call = (extra) => ({
 
 test("only calls waiting for a person get approval buttons", () => {
   const waiting = toolCardHtml(call({ pending: true }), "run_1");
+  assert.ok(!waiting.includes("approval-why"), "no reason beyond the policy, none shown");
+  const flagged = toolCardHtml(call({ pending: true, pending_note: "Jev flagged it: destroys-data 0.93 <x>" }), "run_1");
+  assert.ok(flagged.includes('class="approval-why">Jev flagged it: destroys-data 0.93 &lt;x&gt;'));
   for (const decision of ["allow", "always", "deny"]) {
     assert.ok(waiting.includes(`data-approve="${decision}" data-run="run_1" data-call="call_1"`), decision);
   }

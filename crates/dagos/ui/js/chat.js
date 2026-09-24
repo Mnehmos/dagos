@@ -158,6 +158,7 @@ export function toolCardHtml(call, runId) {
   const approval = pending
     ? `<div class="approval" role="group" aria-label="Approve ${esc(call.name)}">
         <span>Run <code>${esc(call.name)}</code>?</span>
+        ${call.pending_note ? `<span class="approval-why">${esc(call.pending_note)}</span>` : ""}
         <button type="button" class="primary" data-approve="allow" data-run="${esc(runId)}" data-call="${esc(call.call_id)}">Allow once</button>
         <button type="button" data-approve="always" data-run="${esc(runId)}" data-call="${esc(call.call_id)}" title="Set this tool to allow; later calls run without asking">Always allow</button>
         <button type="button" class="danger" data-approve="deny" data-run="${esc(runId)}" data-call="${esc(call.call_id)}">Deny</button>
