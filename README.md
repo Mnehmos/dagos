@@ -168,11 +168,11 @@ Two checks can make a call stricter than its policy, never looser:
   among themselves and every tool of the same server their arguments name: a batch that names an
   Off tool is refused, one that names an Ask tool asks.
 - **The guard.** With a Jev that answers yes/no questions (TypeSafe's), every call about to run is
-  judged against eight risks, in the light of your request: destroys data you did not ask to
-  change, changes the system, uses the network, touches secrets, changes files outside the project,
-  stops other processes, controls the mouse/keyboard/screen, or hands work to tools chosen while
-  it runs (e.g. `jev_dispatch`). A likely risk (0.5 or more) turns Allow into a question, and the
-  approval card says why ("Jev flagged it: destroys-data 0.93"); the flag is recorded with your
+  judged against nine risks, in the light of your request: changes data you did not ask to
+  change, changes the system, uses the network, changes files outside the project, stops other
+  processes, or controls the mouse/keyboard/screen; and, even when you asked for it, deletes data,
+  touches secrets, or hands work to tools chosen while it runs (e.g. `jev_dispatch`). A likely risk
+  (0.5 or more) turns Allow into a question, and the approval card says why ("Jev flagged it: destroys-data 0.93"); the flag is recorded with your
   decision. If the check cannot run, the call asks too. Without such a Jev, policies decide alone.
 
 A run executes tools like this: a validated response lists `tool_calls`; DAGOS records each call
