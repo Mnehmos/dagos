@@ -367,10 +367,19 @@ function arcPath(arc, maxSpan) {
   return `M ${x} ${y1} C ${x - bulge} ${y1}, ${x - bulge} ${y2}, ${x} ${y2}`;
 }
 
-export function dagHtml({ dag, active, emitted, selectedNodeId, runId, memberSources }) {
-  const layout = model.dagLayout(dag, { active, emitted });
+export function dagHtml({ dag, active, emitted, selectedNodeId, runId, memberSources, showMessages = false }) {
+  // Chat messages are nodes too, but they crowd out what runs recorded: they are hidden unless
+  // asked for (a selected message stays visible).
+  const messages = dag.nodes.filter((node) => node.type === "conversation").length;
+  const shown = showMessages
+    ? dag
+    : { ...dag, nodes: dag.nodes.filter((node) => node.type !== "conversation" || node.id === selectedNodeId) };
+  const layout = model.dagLayout(shown, { active, emitted });
+  const toggle = messages
+    ? `<button type="button" class="link dag-messages" data-action="toggle-messages" aria-pressed="${showMessages}">${showMessages ? "Hide" : "Show"} ${messages} message${messages === 1 ? "" : "s"}</button>`
+    : "";
   const header = `<header class="panel-header"><h2>Durable DAG</h2>
-    <span class="counts">${dag.nodes.length} nodes · ${dag.edges.length} edges</span></header>
+    <span class="counts">${dag.nodes.length} nodes · ${dag.edges.length} edges</span>${toggle}</header>
     <ul class="legend" aria-label="Legend">
       <li><span class="swatch swatch-durable" aria-hidden="true"></span>durable node</li>
       <li><span class="swatch swatch-active" aria-hidden="true"></span>active in ${runId ? "selected run's" : "a run's"} context · temporary</li>
@@ -378,6 +387,9 @@ export function dagHtml({ dag, active, emitted, selectedNodeId, runId, memberSou
     </ul>`;
   if (!dag.nodes.length) {
     return `${header}<p class="empty-note">The durable DAG is empty. Each run records its message here, and valid emissions add nodes and edges.</p>`;
+  }
+  if (!layout.rows.length) {
+    return `${header}<p class="empty-note">Only chat messages so far. Nodes that runs emit (tasks, decisions, artifacts, observations, results) appear here.</p>`;
   }
   const height = layout.rows.length * ROW;
   const arcs = layout.arcs

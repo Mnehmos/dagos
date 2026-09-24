@@ -33,7 +33,26 @@ const state = {
   renaming: false,
   sending: false,
   bannerDismissed: null,
+  /** Whether the DAG panel shows chat messages (a per-browser preference). */
+  showMessages: readPreference("dagos-dag-messages") === "shown",
 };
+
+/** A per-browser preference, or `null` when storage is unavailable. */
+function readPreference(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function writePreference(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Private windows and blocked storage simply do not remember.
+  }
+}
 
 // ---------------------------------------------------------------------------------------------
 // Location: #p=<project>&c=<conversation>&run=<run>&view=inspect
@@ -331,6 +350,7 @@ function renderDag() {
     selectedNodeId: state.selectedNodeId,
     runId: state.detail?.run.id ?? null,
     memberSources: new Map(members.map((member) => [member.node_id, member.source])),
+    showMessages: state.showMessages,
   });
 }
 
@@ -732,6 +752,11 @@ function onClick(event) {
       archive: () => archiveConversation(true),
       restore: () => archiveConversation(false),
       "to-chat": () => setMode("chat"),
+      "toggle-messages": () => {
+        state.showMessages = !state.showMessages;
+        writePreference("dagos-dag-messages", state.showMessages ? "shown" : "hidden");
+        renderDag();
+      },
       "prev-turn": () => moveTurn(-1),
       "next-turn": () => moveTurn(1),
       dismiss: () => {
