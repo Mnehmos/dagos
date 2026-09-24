@@ -191,8 +191,9 @@ impl ToolGate for Approvals {
             };
             return ToolDecision::Deny { by: ToolDecider::Policy, reason };
         }
+        let settings = self.config.read().unwrap_or_else(PoisonError::into_inner).guard;
         let guard = self.guard.read().unwrap_or_else(PoisonError::into_inner).clone();
-        let assessment = match guard {
+        let assessment = match guard.filter(|_| settings.enabled) {
             Some(guard) => {
                 let description = self
                     .tools
@@ -201,7 +202,7 @@ impl ToolGate for Approvals {
                     .get(&request.name)
                     .cloned()
                     .unwrap_or_default();
-                guard.assess(run_id, request, &description).await
+                guard.assess(run_id, request, &description, settings.threshold).await
             }
             None => Assessment::Unchecked,
         };
@@ -274,7 +275,7 @@ mod tests {
         let mut server = McpServer::new("ooda", "node", vec![]);
         server.tools.insert("read_file".into(), Policy::Allow);
         server.tools.insert("mouse_click".into(), Policy::Off);
-        approvals.set_config(McpConfig { servers: vec![server] });
+        approvals.set_config(McpConfig { servers: vec![server], ..Default::default() });
         approvals
     }
 
@@ -386,7 +387,7 @@ mod tests {
         server.policy = Policy::Allow;
         server.tools.insert("mouse_click".into(), Policy::Off);
         server.tools.insert("exec_cli".into(), Policy::Ask);
-        approvals.set_config(McpConfig { servers: vec![server] });
+        approvals.set_config(McpConfig { servers: vec![server], ..Default::default() });
         // As in production: the server describes every tool, but `off` ones are not offered.
         let described = ["batch_tools", "exec_cli", "mouse_click", "read_file"];
         let status = |name: &str| dagos_mcp::ToolStatus {

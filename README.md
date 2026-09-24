@@ -135,7 +135,8 @@ functions in parallel.
   above the threshold go back to the model (`review` in the IR) and the run continues, until a
   review is clean, the code stops changing, or three reviews have run. The chat shows each review
   under the turn. A finding the model disagrees with is answered in prose, not "fixed".
-- **Rules** live in `.dagos/lint.json` (without it, the defaults apply):
+- **Rules** are edited in the app (**Settings → Review loop**: rules, hints, threshold, reviews per
+  run, on/off) and live in `.dagos/lint.json` (without it, the defaults apply):
   `{"threshold": 0.7, "max_rounds": 3, "rules": [{"id": "swallows-errors", "text": "Swallows
   errors.", "applies": "…", "except": "…"}]}`. `"enabled": false` turns the loop off.
 - **CI:** `dagos lint [files]` judges every function in the files (default: files changed since the
@@ -175,7 +176,8 @@ Two checks can make a call stricter than its policy, never looser:
   change, changes the system, uses the network, changes files outside the project, stops other
   processes, or controls the mouse/keyboard/screen; and, even when you asked for it, deletes data,
   touches secrets, or hands work to tools chosen while it runs (e.g. `jev_dispatch`). A likely risk
-  (0.5 or more) turns Allow into a question, and the approval card says why ("Jev flagged it: destroys-data 0.93"); the flag is recorded with your
+  (0.5 or more by default; **Settings → Tool guard** sets it, or turns the guard off) turns Allow
+  into a question, and the approval card says why ("Jev flagged it: destroys-data 0.93"); the flag is recorded with your
   decision. If the check cannot run, the call asks too. Without such a Jev, policies decide alone.
 
 A run executes tools like this: a validated response lists `tool_calls`; DAGOS records each call

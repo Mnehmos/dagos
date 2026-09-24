@@ -58,6 +58,7 @@ async fn discovery_namespaces_tools_and_reports_every_server() {
             fixture("files", &[]),
             McpServer::new("offline", "dagos-no-such-command", vec![]),
         ],
+        ..Default::default()
     };
     let capabilities = discover(&config, TIMEOUT).await;
     let names: Vec<&str> = capabilities.tools.iter().map(|tool| tool.name.as_str()).collect();
@@ -115,14 +116,20 @@ async fn run_with_tools(tools: Vec<IrTool>) -> (RunStatus, Vec<IrTool>) {
 #[tokio::test]
 async fn runs_work_without_mcp_and_carry_its_capabilities_when_configured() {
     // MCP unavailable: every server failed, so there are no tools, and the run still completes.
-    let offline =
-        McpConfig { servers: vec![McpServer::new("offline", "dagos-no-such-command", vec![])] };
+    let offline = McpConfig {
+        servers: vec![McpServer::new("offline", "dagos-no-such-command", vec![])],
+        ..Default::default()
+    };
     let none = discover(&offline, TIMEOUT).await;
     assert!(none.tools.is_empty());
     assert_eq!(run_with_tools(none.tools).await, (RunStatus::Completed, vec![]));
 
     // MCP available: its tool descriptions reach the provider through IR, and nothing else changes.
-    let available = discover(&McpConfig { servers: vec![fixture("files", &[])] }, TIMEOUT).await;
+    let available = discover(
+        &McpConfig { servers: vec![fixture("files", &[])], ..Default::default() },
+        TIMEOUT,
+    )
+    .await;
     let (status, tools) = run_with_tools(available.tools.clone()).await;
     assert_eq!(status, RunStatus::Completed);
     assert_eq!(tools, available.tools);
@@ -133,7 +140,7 @@ async fn policies_decide_which_tools_models_see() {
     let mut files = fixture("files", &[]);
     files.policy = Policy::Allow;
     files.tools.insert("search".into(), Policy::Off);
-    let config = McpConfig { servers: vec![files] };
+    let config = McpConfig { servers: vec![files], ..Default::default() };
     assert_eq!(config.policy_of("files.read_file"), Policy::Allow);
     assert_eq!(config.policy_of("files.search"), Policy::Off);
     assert_eq!(config.policy_of("other.read_file"), Policy::Off);
@@ -155,14 +162,18 @@ async fn policies_decide_which_tools_models_see() {
 
     let mut disabled = fixture("files", &[]);
     disabled.enabled = false;
-    let capabilities = discover(&McpConfig { servers: vec![disabled] }, TIMEOUT).await;
+    let capabilities =
+        discover(&McpConfig { servers: vec![disabled], ..Default::default() }, TIMEOUT).await;
     assert!(capabilities.tools.is_empty());
     assert!(!capabilities.servers[0].enabled && capabilities.servers[0].error.is_none());
 }
 
 #[tokio::test]
 async fn the_pool_keeps_sessions_and_runs_tool_calls() {
-    let pool = McpPool::new(McpConfig { servers: vec![fixture("files", &[])] }, TIMEOUT);
+    let pool = McpPool::new(
+        McpConfig { servers: vec![fixture("files", &[])], ..Default::default() },
+        TIMEOUT,
+    );
     assert_eq!(pool.discover().await.tools.len(), 2);
     let request = |name: &str, arguments: serde_json::Value| ToolRequest {
         call_id: "call_1".into(),
@@ -208,7 +219,7 @@ fn configuration_round_trips_with_policies() {
     server.cwd = Some("C:/tools/ooda".into());
     server.tools.insert("exec_cli".into(), Policy::Ask);
     server.tools.insert("read_file".into(), Policy::Allow);
-    let config = McpConfig { servers: vec![server] };
+    let config = McpConfig { servers: vec![server], ..Default::default() };
     config.save(&path).unwrap();
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(!text.contains("\"enabled\""), "defaults are not written: {text}");

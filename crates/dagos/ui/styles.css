@@ -3151,3 +3151,53 @@ details.review-found {
   color: var(--warn);
   font-size: 12px;
 }
+
+/* Settings: the review loop's rules and the guard's risks */
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.field-row input[type="number"],
+.guard-form input[type="number"] {
+  width: 5.5em;
+}
+
+.rule-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 1.4em;
+}
+
+.rule-main {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.rule-main input {
+  flex: 1;
+  min-width: 0;
+}
+
+.rule-hints summary {
+  cursor: pointer;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.rule-hints label {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.risk-list {
+  display: grid;
+  gap: 6px;
+  padding-left: 1.2em;
+  font-size: 13px;
+}

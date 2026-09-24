@@ -253,6 +253,100 @@ export function toolsNavHtml(tools, selected) {
     <button type="button" class="settings-nav-add${selected === "tool:new" ? " selected" : ""}" data-settings-select="tool:new">+ Add MCP server</button>`;
 }
 
+/** The review loop's and the tool guard's entries in the settings list. */
+export function safetyNavHtml(lint, tools, selected) {
+  const item = (key, name, on) => `<li><button type="button" class="settings-nav-item${selected === key ? " selected" : ""}" data-settings-select="${key}" aria-current="${selected === key}">
+      <span class="settings-nav-name">${name}</span>
+      <span class="status-pill status-${on ? "ready" : "keyless"}">${on ? "On" : "Off"}</span>
+    </button></li>`;
+  const review = lint?.config.enabled ?? true;
+  const guard = tools?.config?.guard?.enabled ?? true;
+  return `<p class="section-label">Safety and quality</p>
+    <ul class="settings-nav-list">${item("review", "Review loop", review)}${item("guard", "Tool guard", guard)}</ul>`;
+}
+
+/** A rule ID from its text, e.g. `swallows-errors` for "Swallows errors." */
+export function ruleId(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+}
+
+/** The review loop's pane: on/off, threshold, review limit, and the rules (`rules` is the draft). */
+export function reviewHtml(lint, rules) {
+  if (!lint) return `<p class="loading">Loading…</p>`;
+  const config = lint.config;
+  const rows = rules
+    .map(
+      (rule, index) => `<li class="rule-row">
+        <div class="rule-main">
+          <input name="rule_text" value="${esc(rule.text)}" placeholder="A problem, in a few words, e.g. Swallows errors." aria-label="Rule ${index + 1}" required>
+          <button type="button" class="link danger" data-settings-action="rule-remove" data-index="${index}" aria-label="Remove rule ${index + 1}">Remove</button>
+        </div>
+        <input type="hidden" name="rule_id" value="${esc(rule.id)}">
+        <details class="rule-hints">
+          <summary>Hints for the judge</summary>
+          <label>Applies when<textarea name="rule_applies" rows="2" placeholder="What counts, in more detail.">${esc(rule.applies ?? "")}</textarea></label>
+          <label>Not a problem when<textarea name="rule_except" rows="2" placeholder="Accepted exceptions in this project.">${esc(rule.except ?? "")}</textarea></label>
+        </details>
+      </li>`,
+    )
+    .join("");
+  return `<header class="settings-head"><h3>Review loop</h3><span class="status-pill status-${config.enabled ? "ready" : "keyless"}">${config.enabled ? "On" : "Off"}</span></header>
+    <p class="callout">When a run's tool calls change code, Jev judges every changed function against these plain-English rules (one yes/no per rule). Rules it judges likely go back to the model, which fixes them or explains why they are wrong, before the run ends. <code>dagos lint</code> uses the same rules. Needs TypeSafe's Jev.</p>
+    <form class="settings-block review-form" data-settings-form="review">
+      <label class="choice"><input type="checkbox" name="enabled" ${config.enabled ? "checked" : ""}> <span><strong>Review the code runs change</strong></span></label>
+      <div class="field-row">
+        <label>Finding at <input type="number" name="threshold" min="0" max="1" step="0.05" value="${config.threshold}"> or above</label>
+        <label>Reviews per run <input type="number" name="max_rounds" min="1" max="10" step="1" value="${config.max_rounds}"></label>
+      </div>
+      <p class="section-label">Rules (${rules.length})</p>
+      <ol class="rule-list">${rows}</ol>
+      <div class="button-row start">
+        <button type="button" data-settings-action="rule-add">+ Add rule</button>
+        <button type="button" class="link" data-settings-action="rules-reset">Restore the default rules</button>
+      </div>
+      <p class="hint">Saved in <code>${esc(lint.file)}</code>.</p>
+      <div class="button-row start"><button type="submit" class="primary">Save</button></div>
+    </form>`;
+}
+
+/** The review form's values as a lint configuration. */
+export function readReviewForm(form) {
+  const data = new FormData(form);
+  const all = (name) => data.getAll(name).map((value) => String(value));
+  const [ids, texts, applies, excepts] = ["rule_id", "rule_text", "rule_applies", "rule_except"].map(all);
+  const rules = texts.map((text, index) => ({
+    id: ids[index] || ruleId(text) || `rule-${index + 1}`,
+    text: text.trim(),
+    applies: applies[index]?.trim() || null,
+    except: excepts[index]?.trim() || null,
+  }));
+  return {
+    enabled: data.get("enabled") === "on",
+    threshold: Number(data.get("threshold")),
+    max_rounds: Number(data.get("max_rounds")),
+    rules,
+  };
+}
+
+/** The tool guard's pane: on/off, threshold, and the risks it asks about. */
+export function guardHtml(tools) {
+  if (!tools) return `<p class="loading">Loading…</p>`;
+  const guard = tools.config.guard ?? { enabled: true, threshold: 0.5 };
+  const risks = (tools.guard_risks ?? [])
+    .map((risk) => `<li><code>${esc(risk.id)}</code> ${esc(risk.meaning)}${risk.always_asks ? ` <span class="status-pill status-needs-key">always asks</span>` : ""}</li>`)
+    .join("");
+  return `<header class="settings-head"><h3>Tool guard</h3><span class="status-pill status-${guard.enabled ? "ready" : "keyless"}">${guard.enabled ? "On" : "Off"}</span></header>
+    <p class="callout">Before a tool call runs, Jev judges it against these risks in the light of your request. A likely risk turns an <strong>Allow</strong> into a question for you, and the approval says why. The guard only ever asks more, never less; policies still decide first. Needs TypeSafe's Jev.</p>
+    <form class="settings-block guard-form" data-settings-form="guard">
+      <label class="choice"><input type="checkbox" name="enabled" ${guard.enabled ? "checked" : ""}> <span><strong>Check tool calls before they run</strong></span></label>
+      <label>Ask at <input type="number" name="threshold" min="0" max="1" step="0.05" value="${guard.threshold}"> or above <span class="hint">(lower asks more often)</span></label>
+      <div class="button-row start"><button type="submit" class="primary">Save</button></div>
+    </form>
+    <p class="section-label">Risks</p>
+    <ul class="risk-list">${risks}</ul>
+    <p class="hint">Risks marked <em>always asks</em> need you even when your request asked for them.</p>`;
+}
+
 function policyControlHtml(serverId, tool, current) {
   return `<span class="policy-control" role="group" aria-label="${esc(tool ?? "all tools")} policy">${POLICIES.map(
     (policy) => `<button type="button" class="policy-${policy.value}" data-settings-action="tool-policy" data-server="${esc(serverId)}"${tool ? ` data-tool="${esc(tool)}"` : ""} data-policy="${policy.value}" aria-pressed="${current === policy.value}" title="${esc(policy.hint)}">${policy.label}</button>`,
@@ -367,10 +461,12 @@ function render() {
   const toolServer = ui.selected?.startsWith("tool:") ? ui.selected.slice(5) : null;
   const knownTool = toolServer === "new" || (ui.tools?.config.servers ?? []).some((server) => server.id === toolServer);
   if (toolServer && !knownTool && ui.tools) ui.selected = "tool:new";
-  if (!ui.selected || (!ui.selected.startsWith("tool:") && ui.selected !== "jev" && ui.selected !== "new" && !settings.providers.some((p) => p.id === ui.selected))) {
+  const fixed = ["jev", "new", "review", "guard"];
+  if (!ui.selected || (!ui.selected.startsWith("tool:") && !fixed.includes(ui.selected) && !settings.providers.some((p) => p.id === ui.selected))) {
     ui.selected = settings.providers.find((p) => p.origin !== "builtin" && !p.available)?.id ?? settings.providers[1]?.id ?? "fake";
   }
-  $("settings-nav").innerHTML = navHtml(settings, ui.selected) + toolsNavHtml(ui.tools, ui.selected);
+  $("settings-nav").innerHTML =
+    navHtml(settings, ui.selected) + safetyNavHtml(ui.lint, ui.tools, ui.selected) + toolsNavHtml(ui.tools, ui.selected);
   const detail = $("settings-detail");
   if (ui.selected === "tool:new") detail.innerHTML = newToolServerHtml(ui.imports);
   else if (ui.selected.startsWith("tool:")) {
@@ -379,6 +475,10 @@ function render() {
     const status = ui.tools?.capabilities?.servers.find((candidate) => candidate.id === id);
     detail.innerHTML = server ? toolServerHtml(server, status, { filter: ui.toolFilter }) : `<p class="loading">Loading…</p>`;
   } else if (ui.selected === "jev") detail.innerHTML = jevHtml(settings, { checks: ui.checks });
+  else if (ui.selected === "review") {
+    ui.lintDraft ??= structuredClone(ui.lint?.config.rules ?? []);
+    detail.innerHTML = reviewHtml(ui.lint, ui.lintDraft);
+  } else if (ui.selected === "guard") detail.innerHTML = guardHtml(ui.tools);
   else if (ui.selected === "new") detail.innerHTML = newEndpointHtml();
   else {
     const provider = settings.providers.find((p) => p.id === ui.selected);
@@ -484,6 +584,28 @@ async function onSubmit(event) {
       await saveToolServer(id, body, form.dataset.server ? "Saved and restarted." : `Added ${id}.`);
       break;
     }
+    case "review": {
+      try {
+        ui.lint = await api.saveLint(readReviewForm(form));
+        ui.lintDraft = structuredClone(ui.lint.config.rules);
+        render();
+        ui.notify("Review settings saved; the next runs use them.");
+        await ui.onChange();
+      } catch (error) {
+        ui.notify(error.message, { error: true });
+      }
+      break;
+    }
+    case "guard": {
+      try {
+        ui.tools = await api.saveGuard({ enabled: data.get("enabled") === "on", threshold: Number(data.get("threshold")) });
+        render();
+        ui.notify("Tool guard saved.");
+      } catch (error) {
+        ui.notify(error.message, { error: true });
+      }
+      break;
+    }
     case "jev": {
       if (data.get("mode") === "offline") {
         await apply(api.clearJev(), "Jev classifies with the offline policy.");
@@ -537,6 +659,20 @@ async function onClick(event) {
     case "check":
       await check(provider);
       break;
+    case "rule-add":
+    case "rule-remove":
+    case "rules-reset": {
+      const action = target.dataset.settingsAction;
+      if (action === "rules-reset") ui.lintDraft = structuredClone(ui.lint.defaults);
+      else {
+        ui.lintDraft = readReviewForm(target.closest("form")).rules;
+        if (action === "rule-add") ui.lintDraft.push({ id: "", text: "", applies: null, except: null });
+        else ui.lintDraft.splice(Number(target.dataset.index), 1);
+      }
+      render();
+      if (action === "rule-add") [...document.querySelectorAll("[name=rule_text]")].pop()?.focus();
+      break;
+    }
     case "tool-policy": {
       const { server, tool, policy } = target.dataset;
       try {
@@ -642,11 +778,13 @@ export async function openSettings({ section = null, defaults, saveDefaults, onC
   if (!dialog.open) dialog.showModal();
   render();
   try {
-    [ui.settings, ui.tools, ui.imports] = await Promise.all([
+    [ui.settings, ui.tools, ui.imports, ui.lint] = await Promise.all([
       api.settings(),
       api.tools(),
       api.toolImports().catch(() => null),
+      api.lint().catch(() => null),
     ]);
+    ui.lintDraft = null;
     render();
   } catch (error) {
     notify(error.message, { error: true });

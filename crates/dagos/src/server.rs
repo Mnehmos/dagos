@@ -106,6 +106,8 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/tools/import", get(import_candidates))
         .route("/api/tools/servers/{id}", put(save_tool_server).delete(remove_tool_server))
         .route("/api/tools/servers/{id}/policy", put(set_tool_policy))
+        .route("/api/tools/guard", put(set_guard))
+        .route("/api/lint", get(lint_settings).put(save_lint_settings))
         .route("/api/settings", get(settings))
         .route("/api/settings/providers/{id}", put(save_provider).delete(remove_provider))
         .route("/api/settings/providers/{id}/key", put(save_key).delete(remove_key))
@@ -720,14 +722,65 @@ async fn answer_tool_call(
     Ok(Json(json!({"answered": answered})))
 }
 
-/// The tools view: the configuration, what each server offers, and where it is stored.
+/// The tools view: the configuration, what each server offers, the guard's risks, and where it
+/// is stored.
 fn tools_view(workspace: &Workspace) -> Result<Json<serde_json::Value>, ApiError> {
     let config = workspace.mcp_config().map_err(ApiError::Internal)?;
+    let risks: Vec<_> = crate::guard::RISKS
+        .iter()
+        .map(|(id, meaning, excusable)| json!({"id": id, "meaning": meaning, "always_asks": !excusable}))
+        .collect();
     Ok(Json(json!({
         "config": config,
         "capabilities": workspace.capabilities(),
+        "guard_risks": risks,
         "file": workspace.dir().join(crate::workspace::MCP_FILE),
     })))
+}
+
+/// `PUT /api/tools/guard`: turns the tool guard on or off and sets its threshold.
+async fn set_guard(
+    State(state): State<Arc<AppState>>,
+    Json(settings): Json<dagos_mcp::GuardSettings>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let workspace = &state.workspace;
+    let _edit = workspace.tool_edit_lock().await;
+    let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
+    config.guard = settings;
+    workspace.set_tool_policies(config).map_err(ApiError::BadRequest)?;
+    tools_view(workspace)
+}
+
+/// The review loop's settings, the default rules, and where they are stored.
+fn lint_view(workspace: &Workspace) -> Result<Json<serde_json::Value>, ApiError> {
+    let file = workspace.dir().join(dagos_lint::LINT_FILE);
+    let config = dagos_lint::LintConfig::load(&file).map_err(ApiError::Internal)?;
+    Ok(Json(json!({
+        "config": config,
+        "defaults": dagos_lint::default_rules(),
+        "file": file,
+    })))
+}
+
+/// `GET /api/lint`.
+async fn lint_settings(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    lint_view(&state.workspace)
+}
+
+/// `PUT /api/lint`: saves the review loop's settings and rules; later runs use them.
+async fn save_lint_settings(
+    State(state): State<Arc<AppState>>,
+    Json(config): Json<dagos_lint::LintConfig>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let workspace = &state.workspace;
+    {
+        let _guard = workspace.edit_lock();
+        config.save(&workspace.dir().join(dagos_lint::LINT_FILE)).map_err(ApiError::BadRequest)?;
+        workspace.reload().map_err(ApiError::Internal)?;
+    }
+    lint_view(workspace)
 }
 
 /// `GET /api/tools`.

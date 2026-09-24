@@ -44,6 +44,9 @@ export const api = {
   answerTool: (run, call, body) =>
     request("POST", `/api/runs/${encodeURIComponent(run)}/tools/${encodeURIComponent(call)}`, body),
   tools: () => request("GET", "/api/tools"),
+  saveGuard: (body) => request("PUT", "/api/tools/guard", body),
+  lint: () => request("GET", "/api/lint"),
+  saveLint: (config) => request("PUT", "/api/lint", config),
   toolImports: () => request("GET", "/api/tools/import"),
   saveToolServer: (id, body) => request("PUT", `/api/tools/servers/${encodeURIComponent(id)}`, body),
   removeToolServer: (id) => request("DELETE", `/api/tools/servers/${encodeURIComponent(id)}`),

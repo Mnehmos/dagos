@@ -52,10 +52,40 @@ fn is_ask(value: &Policy) -> bool {
 }
 
 /// MCP servers and their tool policies (`mcp.json`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpConfig {
     pub servers: Vec<McpServer>,
+    /// The tool guard's settings.
+    #[serde(default, skip_serializing_if = "GuardSettings::is_default")]
+    pub guard: GuardSettings,
+}
+
+/// Whether Jev judges each tool call's risks before it runs, and from which probability a risk
+/// sends an allowed call to the person.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuardSettings {
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_risk_threshold")]
+    pub threshold: f64,
+}
+
+fn default_risk_threshold() -> f64 {
+    0.5
+}
+
+impl Default for GuardSettings {
+    fn default() -> Self {
+        Self { enabled: true, threshold: default_risk_threshold() }
+    }
+}
+
+impl GuardSettings {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 /// One MCP server, started as a child process speaking MCP over stdio.
@@ -132,6 +162,9 @@ impl McpConfig {
     }
 
     fn validate(&self) -> Result<(), String> {
+        if !(0.0..=1.0).contains(&self.guard.threshold) {
+            return Err("the guard's threshold must be between 0 and 1".into());
+        }
         let mut seen = std::collections::BTreeSet::new();
         for server in &self.servers {
             if !valid_server_id(&server.id) {

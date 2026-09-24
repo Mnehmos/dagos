@@ -16,9 +16,6 @@ use dagos_core::store::Store;
 use dagos_core::tools::ToolRequest;
 use serde_json::{Value, json};
 
-/// A risk at or above this probability needs a person.
-pub const RISK_THRESHOLD: f64 = 0.5;
-
 /// How long the guard may take; a call it could not check in time asks the person.
 pub const GUARD_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -131,12 +128,14 @@ impl Guard {
         Self { jev, store, root }
     }
 
-    /// Judges `request` (a call of the tool described by `description`) in `run_id`.
+    /// Judges `request` (a call of the tool described by `description`) in `run_id`; risks at or
+    /// above `threshold` count.
     pub async fn assess(
         &self,
         run_id: &RunId,
         request: &ToolRequest,
         description: &str,
+        threshold: f64,
     ) -> Assessment {
         let message = self
             .store
@@ -201,7 +200,7 @@ impl Guard {
             RISKS
                 .iter()
                 .zip(highest)
-                .filter(|(_, probability)| *probability >= RISK_THRESHOLD)
+                .filter(|(_, probability)| *probability >= threshold)
                 .map(|((id, _, _), probability)| Risk {
                     id,
                     probability: (probability * 100.0).round() / 100.0,

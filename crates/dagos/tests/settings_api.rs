@@ -180,3 +180,35 @@ async fn runs_work_without_the_model_jev_and_record_the_fallback() {
     assert_eq!(settings["jev"]["active"], "fake-jev");
     assert!(settings["jev"]["provider"].is_null());
 }
+
+#[tokio::test]
+async fn the_review_loop_and_the_tool_guard_are_configured_in_the_app() {
+    let api = Api::start().await;
+
+    let lint = api.ok(Method::GET, "/api/lint", None).await;
+    assert_eq!(lint["config"]["rules"].as_array().unwrap().len(), 14, "defaults without a file");
+    assert_eq!(lint["defaults"].as_array().unwrap().len(), 14);
+    let mut config = lint["config"].clone();
+    config["threshold"] = json!(0.8);
+    config["rules"] = json!([{"id": "no-todo", "text": "Leaves a TODO behind."}]);
+    let saved = api.ok(Method::PUT, "/api/lint", Some(config)).await;
+    assert_eq!(saved["config"]["threshold"], 0.8);
+    assert_eq!(saved["config"]["rules"][0]["id"], "no-todo");
+    let file = std::fs::read_to_string(saved["file"].as_str().unwrap()).unwrap();
+    assert!(file.contains("Leaves a TODO behind."));
+    let (status, _) =
+        api.call(Method::PUT, "/api/lint", Some(json!({"threshold": 3, "rules": []}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "invalid settings are refused");
+
+    let tools = api.ok(Method::GET, "/api/tools", None).await;
+    assert_eq!(tools["guard_risks"].as_array().unwrap().len(), 9);
+    assert!(tools["guard_risks"].as_array().unwrap().iter().any(|r| r["always_asks"] == true));
+    let tools = api
+        .ok(Method::PUT, "/api/tools/guard", Some(json!({"enabled": false, "threshold": 0.3})))
+        .await;
+    assert_eq!(tools["config"]["guard"], json!({"enabled": false, "threshold": 0.3}));
+    let (status, _) = api
+        .call(Method::PUT, "/api/tools/guard", Some(json!({"enabled": true, "threshold": 1.5})))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

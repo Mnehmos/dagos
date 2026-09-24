@@ -74,7 +74,17 @@ impl LintConfig {
         Ok(config)
     }
 
-    fn validate(&self) -> Result<(), String> {
+    /// Writes the configuration to `path`.
+    pub fn save(&self, path: &Path) -> Result<(), String> {
+        self.validate()?;
+        let text = serde_json::to_string_pretty(self).expect("lint configuration serializes");
+        std::fs::write(path, format!("{text}\n"))
+            .map_err(|error| format!("cannot save {}: {error}", path.display()))
+    }
+
+    /// Whether the configuration is usable: a threshold between 0 and 1, at least one review,
+    /// and rules with unique IDs and some text.
+    pub fn validate(&self) -> Result<(), String> {
         if !(0.0..=1.0).contains(&self.threshold) {
             return Err("threshold must be between 0 and 1".into());
         }
