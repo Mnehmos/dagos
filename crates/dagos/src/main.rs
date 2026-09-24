@@ -191,7 +191,7 @@ async fn lint(
     if let Some(threshold) = threshold {
         config.threshold = threshold;
     }
-    let files = if files.is_empty() { changed_files(&root)? } else { files };
+    let files = if files.is_empty() { workspace::changed_files(&root)? } else { files };
     let jev = workspace.runtime().shared_jev();
     let report = dagos_lint::lint_files(&root, &files, jev, &config).await?;
     if as_json {
@@ -224,26 +224,6 @@ async fn lint(
         );
     }
     Ok(if report.findings.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(1) })
-}
-
-/// Files changed since the last commit, and new files, relative to `root` (from git).
-fn changed_files(root: &std::path::Path) -> Result<Vec<String>, String> {
-    let output = std::process::Command::new("git")
-        .args(["status", "--porcelain", "--untracked-files=all"])
-        .current_dir(root)
-        .output()
-        .map_err(|error| format!("cannot run git to find changed files: {error}"))?;
-    if !output.status.success() {
-        return Err("git status failed; name the files to lint".into());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter(|line| line.len() > 3 && !line.starts_with(" D") && !line.starts_with("D "))
-        .map(|line| {
-            let path = &line[3..];
-            path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"').to_owned()
-        })
-        .collect())
 }
 
 fn keys(action: Keys) -> Result<ExitCode, String> {

@@ -19,6 +19,19 @@ pub struct LintConfig {
     pub max_rounds: usize,
     #[serde(default = "default_rules")]
     pub rules: Vec<Rule>,
+    /// Findings a person marked "not a problem here": never reported again.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dismissed: Vec<Dismissal>,
+}
+
+/// A rule a person decided does not apply to one function.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Dismissal {
+    pub rule: String,
+    /// The file as findings name it (relative to the project root, `/` separators).
+    pub file: String,
+    pub function: String,
 }
 
 /// One rule: a short sentence naming a problem, with optional hints for the judge.
@@ -56,6 +69,7 @@ impl Default for LintConfig {
             threshold: default_threshold(),
             max_rounds: default_max_rounds(),
             rules: default_rules(),
+            dismissed: Vec::new(),
         }
     }
 }
@@ -72,6 +86,11 @@ impl LintConfig {
             .map_err(|error| format!("invalid {}: {error}", path.display()))?;
         config.validate().map_err(|error| format!("invalid {}: {error}", path.display()))?;
         Ok(config)
+    }
+
+    /// Whether a person dismissed `rule` for `function` in `file`.
+    pub fn is_dismissed(&self, rule: &str, file: &str, function: &str) -> bool {
+        self.dismissed.iter().any(|d| d.rule == rule && d.file == file && d.function == function)
     }
 
     /// Writes the configuration to `path`.

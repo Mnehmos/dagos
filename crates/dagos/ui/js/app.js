@@ -4,6 +4,7 @@
 
 import { api, openStream } from "./api.js";
 import * as chat from "./chat.js";
+import * as lint from "./lint.js";
 import * as model from "./model.js";
 import { knownModels, openSettings } from "./settings.js";
 import * as view from "./view.js";
@@ -33,6 +34,8 @@ const state = {
   renaming: false,
   sending: false,
   bannerDismissed: null,
+  /** The Lint view: the latest report, and what is selected. */
+  lint: { report: null, loading: false, error: null, selected: null, files: "" },
   /** Whether the DAG panel shows chat messages (a per-browser preference). */
   showMessages: readPreference("dagos-dag-messages") === "shown",
 };
@@ -69,7 +72,7 @@ function writeLocation() {
   if (state.mode === "inspect") {
     params.set("view", "inspect");
     if (state.selectedRunId) params.set("run", state.selectedRunId);
-  }
+  } else if (state.mode === "lint") params.set("view", "lint");
   history.replaceState(null, "", `#${params}`);
 }
 
@@ -277,13 +280,51 @@ async function stopRun() {
 }
 
 function renderMode() {
-  const inspecting = state.mode === "inspect";
-  $("chat").hidden = inspecting;
-  $("inspect").hidden = !inspecting;
-  $("mode-chat").setAttribute("aria-selected", String(!inspecting));
-  $("mode-inspect").setAttribute("aria-selected", String(inspecting));
+  for (const mode of ["chat", "inspect", "lint"]) {
+    $(mode).hidden = state.mode !== mode;
+    $(`mode-${mode}`).setAttribute("aria-selected", String(state.mode === mode));
+  }
   renderInspectBar();
   renderInspector();
+  renderLint();
+}
+
+function renderLint() {
+  if (state.mode !== "lint") return;
+  $("lint-view").innerHTML = lint.lintHtml(state.lint);
+}
+
+async function runLint(files) {
+  state.lint = { ...state.lint, loading: true, error: null, files };
+  renderLint();
+  try {
+    const list = files.split(",").map((file) => file.trim()).filter(Boolean);
+    const report = await api.lintRun({ files: list });
+    state.lint = { ...state.lint, report, selected: report.functions.length ? 0 : null };
+  } catch (error) {
+    state.lint = { ...state.lint, error: error.message };
+  } finally {
+    state.lint.loading = false;
+    renderLint();
+  }
+}
+
+async function dismissFinding(button) {
+  const report = state.lint.report;
+  const fn = report?.functions[Number(button.dataset.index)];
+  if (!fn) return;
+  const dismissed = button.dataset.dismiss === "dismiss";
+  try {
+    const view = await api.dismiss({ rule: button.dataset.rule, file: fn.file, function: fn.function, dismissed });
+    report.dismissed = view.config.dismissed ?? [];
+    report.findings = report.findings.filter(
+      (f) => !(dismissed && f.rule === button.dataset.rule && f.file === fn.file && f.function === fn.function),
+    );
+    renderLint();
+    toast(dismissed ? "Marked not a problem here; reviews and dagos lint skip it." : "Restored.");
+  } catch (error) {
+    showError(error);
+  }
 }
 
 function renderInspectBar() {
@@ -725,7 +766,7 @@ function autosize() {
 function onClick(event) {
   if (state.menuOpen && !event.target.closest(".project-switch")) toggleMenu(false);
   const target = event.target.closest(
-    "[data-approve], [data-conversation], [data-project], [data-inspect], [data-tab], [data-node], [data-copy], [data-close-node], [data-action]",
+    "[data-approve], [data-conversation], [data-project], [data-inspect], [data-tab], [data-node], [data-copy], [data-close-node], [data-lint-row], [data-dismiss], [data-action]",
   );
   if (!target || target.closest("#settings")) return;
   const data = target.dataset;
@@ -735,6 +776,10 @@ function onClick(event) {
   else if (data.inspect) inspectRun(data.inspect);
   else if (data.tab) setTab(data.tab);
   else if (data.node) selectNode(data.node === state.selectedNodeId ? null : data.node);
+  else if (data.lintRow) {
+    state.lint.selected = Number(data.lintRow);
+    renderLint();
+  } else if (data.dismiss) dismissFinding(target);
   else if (data.copy === "ir") copyIr();
   else if ("closeNode" in data) selectNode(null);
   else {
@@ -772,6 +817,10 @@ function onSubmit(event) {
   const form = event.target.closest("[data-form]");
   if (!form) return;
   event.preventDefault();
+  if (form.dataset.form === "lint-run") {
+    runLint(String(new FormData(form).get("files") ?? ""));
+    return;
+  }
   const field = form.dataset.form === "rename-conversation" ? "title" : "name";
   const value = String(new FormData(form).get(field) ?? "").trim();
   if (!value) return;
@@ -812,6 +861,7 @@ function onKeyDown(event) {
     j: () => (state.mode === "inspect" ? moveTurn(1) : moveConversation(1)),
     k: () => (state.mode === "inspect" ? moveTurn(-1) : moveConversation(-1)),
     v: () => setMode(state.mode === "chat" ? "inspect" : "chat"),
+    l: () => setMode("lint"),
     p: () => toggleMenu(),
     c: () => toggleConfig(),
     s: () => showSettings(),
@@ -841,6 +891,7 @@ function bind() {
   $("new-chat").addEventListener("click", newChat);
   $("mode-chat").addEventListener("click", () => setMode("chat"));
   $("mode-inspect").addEventListener("click", () => setMode("inspect"));
+  $("mode-lint").addEventListener("click", () => setMode("lint"));
   $("project-toggle").addEventListener("click", (event) => {
     event.stopPropagation();
     toggleMenu();
@@ -872,7 +923,7 @@ async function boot() {
     state.conversationId = conversations.some((c) => c.id === requested.conversation)
       ? requested.conversation
       : (conversations.find((c) => !c.archived_at)?.id ?? null);
-    state.mode = requested.mode === "inspect" ? "inspect" : "chat";
+    state.mode = ["inspect", "lint"].includes(requested.mode) ? requested.mode : "chat";
     await loadConversation();
     if (state.mode === "inspect") {
       state.selectedRunId = turns().some((turn) => turn.run.id === requested.run) ? requested.run : null;

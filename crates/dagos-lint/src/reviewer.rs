@@ -137,7 +137,11 @@ impl Reviewer for LintReviewer {
             Err(JudgeError::Unsupported) => return Ok(Review::default()),
             Err(error) => return Err(error.to_string()),
         };
-        let mut found = findings(&self.config.rules, &units, &judgments, self.config.threshold);
+        let mut found: Vec<_> =
+            findings(&self.config.rules, &units, &judgments, self.config.threshold)
+                .into_iter()
+                .filter(|f| !self.config.is_dismissed(&f.rule, &f.file, &f.function))
+                .collect();
         found.truncate(MAX_FINDINGS);
         let mut hasher = DefaultHasher::new();
         for unit in &units {

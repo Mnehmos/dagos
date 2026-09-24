@@ -303,6 +303,26 @@ fn build(
     Ok(Live { runtime: Arc::new(runtime), settings: loaded.settings, endpoints: loaded.endpoints })
 }
 
+/// Files changed since the last commit, and new files, relative to `root` (from git).
+pub fn changed_files(root: &Path) -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("cannot run git to find changed files: {error}"))?;
+    if !output.status.success() {
+        return Err("git status failed; name the files to lint".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.len() > 3 && !line.starts_with(" D") && !line.starts_with("D "))
+        .map(|line| {
+            let path = &line[3..];
+            path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"').to_owned()
+        })
+        .collect())
+}
+
 /// The project's root directory: the one containing the DAGOS directory.
 pub fn project_root(dir: &Path) -> PathBuf {
     let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());

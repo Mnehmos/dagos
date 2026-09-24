@@ -108,6 +108,8 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/tools/servers/{id}/policy", put(set_tool_policy))
         .route("/api/tools/guard", put(set_guard))
         .route("/api/lint", get(lint_settings).put(save_lint_settings))
+        .route("/api/lint/run", post(run_lint))
+        .route("/api/lint/dismissals", put(set_dismissal))
         .route("/api/settings", get(settings))
         .route("/api/settings/providers/{id}", put(save_provider).delete(remove_provider))
         .route("/api/settings/providers/{id}/key", put(save_key).delete(remove_key))
@@ -767,6 +769,88 @@ async fn lint_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     lint_view(&state.workspace)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LintRunRequest {
+    /// Files relative to the project root; without them, the files changed since the last commit.
+    #[serde(default)]
+    files: Vec<String>,
+}
+
+/// `POST /api/lint/run`: judges every function of the files against the project's rules and
+/// returns every judgment, the findings, and the dismissals.
+async fn run_lint(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<LintRunRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let workspace = &state.workspace;
+    let root = crate::workspace::project_root(workspace.dir());
+    let config = dagos_lint::LintConfig::load(&workspace.dir().join(dagos_lint::LINT_FILE))
+        .map_err(ApiError::Internal)?;
+    let files = if request.files.is_empty() {
+        crate::workspace::changed_files(&root).map_err(ApiError::BadRequest)?
+    } else {
+        request.files
+    };
+    let jev = workspace.runtime().shared_jev();
+    let report =
+        dagos_lint::lint_files(&root, &files, jev, &config).await.map_err(ApiError::BadRequest)?;
+    let functions: Vec<_> = report
+        .units
+        .iter()
+        .zip(&report.judgments)
+        .map(|(unit, scores)| {
+            json!({
+                "file": unit.file,
+                "function": unit.function.name,
+                "line": unit.function.line,
+                "text": unit.function.text,
+                "scores": scores.iter().map(|p| (p * 100.0).round() / 100.0).collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    let rules: Vec<_> =
+        config.rules.iter().map(|rule| json!({"id": rule.id, "text": rule.text})).collect();
+    Ok(Json(json!({
+        "files": files,
+        "threshold": config.threshold,
+        "rules": rules,
+        "functions": functions,
+        "findings": report.findings,
+        "dismissed": config.dismissed,
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DismissalRequest {
+    #[serde(flatten)]
+    finding: dagos_lint::Dismissal,
+    /// `true` marks the finding "not a problem here"; `false` brings it back.
+    dismissed: bool,
+}
+
+/// `PUT /api/lint/dismissals`: marks one finding "not a problem here", or brings it back. The
+/// review loop and `dagos lint` then skip it.
+async fn set_dismissal(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<DismissalRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let workspace = &state.workspace;
+    {
+        let _guard = workspace.edit_lock();
+        let file = workspace.dir().join(dagos_lint::LINT_FILE);
+        let mut config = dagos_lint::LintConfig::load(&file).map_err(ApiError::Internal)?;
+        config.dismissed.retain(|d| *d != request.finding);
+        if request.dismissed {
+            config.dismissed.push(request.finding);
+        }
+        config.save(&file).map_err(ApiError::BadRequest)?;
+        workspace.reload().map_err(ApiError::Internal)?;
+    }
+    lint_view(workspace)
 }
 
 /// `PUT /api/lint`: saves the review loop's settings and rules; later runs use them.

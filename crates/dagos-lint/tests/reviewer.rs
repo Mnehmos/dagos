@@ -135,3 +135,23 @@ async fn new_files_count_and_files_outside_the_project_do_not() {
     let review = reviewer.review(&run).await.unwrap();
     assert_eq!(review.judged, 1);
 }
+
+#[tokio::test]
+async fn dismissed_findings_are_not_handed_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib.rs");
+    std::fs::write(&lib, "fn load() {\n    read();\n}\n").unwrap();
+    let mut config = config();
+    config.dismissed.push(dagos_lint::Dismissal {
+        rule: "swallows-errors".into(),
+        file: "lib.rs".into(),
+        function: "load".into(),
+    });
+    let reviewer = LintReviewer::new(dir.path(), Arc::new(RuleJudge::default()), config);
+    let run = RunId::parse("run_000003").unwrap();
+    reviewer.before_call(&run, &call(json!({"path": "lib.rs"}))).await;
+    std::fs::write(&lib, "fn load() {\n    read().ok();\n}\n").unwrap();
+    let review = reviewer.review(&run).await.unwrap();
+    assert_eq!(review.judged, 1);
+    assert!(review.findings.is_empty(), "a person said it is not a problem here");
+}

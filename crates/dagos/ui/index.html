@@ -32,6 +32,7 @@
     <div class="mode-toggle" role="tablist" aria-label="View">
       <button id="mode-chat" type="button" role="tab" aria-selected="true" title="Chat (v)">Chat</button>
       <button id="mode-inspect" type="button" role="tab" aria-selected="false" title="Inspect runs (v)">Inspect</button>
+      <button id="mode-lint" type="button" role="tab" aria-selected="false" title="Lint functions against the project's rules (l)">Lint</button>
     </div>
     <div class="topbar-actions">
       <span id="connection" class="connection" data-state="connecting" role="status" aria-live="polite">Connecting…</span>
@@ -100,6 +101,10 @@
         <div id="inspect-bar" class="inspect-bar"></div>
         <section id="inspector" class="inspector" aria-label="Run inspector" tabindex="-1"></section>
       </div>
+
+      <div id="lint" class="lint" hidden>
+        <section id="lint-view" class="lint-view" aria-label="Semantic lint" tabindex="-1"></section>
+      </div>
     </section>
 
     <aside id="dag" class="dag-panel" aria-label="Durable DAG"></aside>
@@ -125,6 +130,7 @@
       <div><dt><kbd>n</kbd></dt><dd>New chat</dd></div>
       <div><dt><kbd>Enter</kbd></dt><dd>Send</dd></div>
       <div><dt><kbd>v</kbd></dt><dd>Chat or Inspect</dd></div>
+      <div><dt><kbd>l</kbd></dt><dd>Lint</dd></div>
       <div><dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next or previous chat (Inspect: turn)</dd></div>
       <div><dt><kbd>1</kbd>–<kbd>6</kbd></dt><dd>Inspector tabs</dd></div>
       <div><dt><kbd>p</kbd></dt><dd>Projects</dd></div>

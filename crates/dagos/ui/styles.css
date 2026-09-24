@@ -3206,3 +3206,175 @@ details.review-found {
   margin-left: auto;
   font-size: 12px;
 }
+
+/* Lint view */
+.lint[hidden] {
+  display: none;
+}
+
+.lint {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.lint-view {
+  flex: 1;
+  overflow: auto;
+  padding: 16px 20px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.lint-form {
+  display: flex;
+  gap: 8px;
+}
+
+.lint-form input {
+  flex: 1;
+  min-width: 0;
+}
+
+.lint-summary {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.lint-grid-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.lint-grid {
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.lint-grid th,
+.lint-grid td {
+  border-bottom: 1px solid var(--border);
+  padding: 0;
+}
+
+.lint-grid thead th {
+  padding: 6px 4px;
+  color: var(--text-3);
+  font-weight: normal;
+  text-align: center;
+  min-width: 26px;
+}
+
+.lint-grid thead th:first-child {
+  text-align: left;
+  padding-left: 10px;
+}
+
+.lint-fn {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.lint-grid tr.selected .lint-fn {
+  background: var(--accent-soft);
+}
+
+.lint-where {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.lint-count {
+  background: var(--bad-soft);
+  color: var(--bad);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 11px;
+}
+
+.lint-grid td.cell {
+  width: 26px;
+  height: 26px;
+  cursor: pointer;
+  background: color-mix(in srgb, var(--bad) calc(var(--p) * 70%), transparent);
+}
+
+.lint-grid td.cell.hit {
+  outline: 2px solid var(--bad);
+  outline-offset: -3px;
+}
+
+.lint-grid td.cell.dismissed {
+  outline-style: dashed;
+  outline-color: var(--text-3);
+  background: color-mix(in srgb, var(--text-3) 20%, transparent);
+}
+
+.lint-detail {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.lint-judgments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+  font-size: 13px;
+}
+
+.lint-judgments li.hit {
+  color: var(--bad);
+}
+
+.lint-judgments li.dismissed {
+  color: var(--text-3);
+  text-decoration: line-through;
+}
+
+.lint-judgments li.dismissed button {
+  text-decoration: none;
+}
+
+.lint-p {
+  display: inline-block;
+  min-width: 3em;
+  font-family: var(--font-mono);
+  border-radius: 4px;
+  padding: 0 4px;
+  background: color-mix(in srgb, var(--bad) calc(var(--p) * 45%), transparent);
+}
+
+.lint-source {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+}
+
+.lint-legend ol {
+  font-size: 13px;
+  columns: 2 280px;
+}
+
+.lint-num {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}

@@ -212,3 +212,23 @@ async fn the_review_loop_and_the_tool_guard_are_configured_in_the_app() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn lint_runs_need_a_capable_jev_and_dismissals_round_trip() {
+    let api = Api::start().await;
+    let (status, error) =
+        api.call(Method::POST, "/api/lint/run", Some(json!({"files": ["src/lib.rs"]}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "the offline Jev cannot judge: {error}");
+
+    let finding = json!({"rule": "swallows-errors", "file": "src/lib.rs", "function": "load"});
+    let mut body = finding.clone();
+    body["dismissed"] = json!(true);
+    let view = api.ok(Method::PUT, "/api/lint/dismissals", Some(body.clone())).await;
+    assert_eq!(view["config"]["dismissed"], json!([finding]));
+    let view = api.ok(Method::PUT, "/api/lint/dismissals", Some(body)).await;
+    assert_eq!(view["config"]["dismissed"].as_array().unwrap().len(), 1, "no duplicates");
+    let mut restore = finding.clone();
+    restore["dismissed"] = json!(false);
+    let view = api.ok(Method::PUT, "/api/lint/dismissals", Some(restore)).await;
+    assert!(view["config"].get("dismissed").is_none(), "restored: nothing dismissed");
+}

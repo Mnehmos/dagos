@@ -24,7 +24,7 @@ use dagos_core::domain::IrFinding;
 pub use extract::{Function, Language};
 pub use judge::{Cache, JudgeError, Unit};
 pub use reviewer::{LintReviewer, MAX_FINDINGS, MAX_UNITS};
-pub use rules::{LintConfig, Rule, default_rules};
+pub use rules::{Dismissal, LintConfig, Rule, default_rules};
 
 /// The linter's configuration file inside the DAGOS directory.
 pub const LINT_FILE: &str = "lint.json";
@@ -36,7 +36,7 @@ pub struct Report {
     pub units: Vec<Unit>,
     /// Every (function, rule) probability, in unit order then rule order.
     pub judgments: judge::Judgments,
-    /// The rules at or above the threshold, most probable first.
+    /// The rules at or above the threshold, most probable first, without dismissed ones.
     pub findings: Vec<IrFinding>,
 }
 
@@ -61,6 +61,9 @@ pub async fn lint_files(
     let judgments = judge::judge(jev, &Cache::default(), &config.rules, &units)
         .await
         .map_err(|error| error.to_string())?;
-    let findings = judge::findings(&config.rules, &units, &judgments, config.threshold);
+    let findings = judge::findings(&config.rules, &units, &judgments, config.threshold)
+        .into_iter()
+        .filter(|f| !config.is_dismissed(&f.rule, &f.file, &f.function))
+        .collect();
     Ok(Report { units, judgments, findings })
 }
