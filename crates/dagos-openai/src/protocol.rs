@@ -4,6 +4,7 @@
 //! instructions and the response schema. The user message is the IR itself, as compact JSON: the
 //! model receives machine-readable input and must answer with one machine-readable document.
 
+use dagos_core::context::NoulQuestion;
 use dagos_core::context::recall::RecallChunk;
 use dagos_core::contracts::Contract;
 use dagos_core::domain::{InferenceIr, JevRequest, ModelId, NodeType};
@@ -29,6 +30,11 @@ needs.
 - tool_results, if present, are this request's earlier tool calls and their outcomes. An output \
 of {\"omitted\": ...} is a large result DAGOS left out because it is not needed for the current \
 step; it comes back if it becomes relevant, and you can call the tool again if you need it now.
+- review, if present, means you are not done yet: DAGOS linted the functions your tool calls \
+changed against the project's plain-English rules, and each finding is a rule its judge found to \
+apply (with the probability). Fix the findings with your tools, then reply again; DAGOS reviews \
+the new code each time you reply without tool calls, up to review.max_rounds. If a finding is \
+wrong, do not change the code for it: say why in presentation.prose.
 
 Reply with exactly one JSON object that satisfies kiss.inference-response.v1 and nothing else: no \
 markdown fences and no text outside the object.
@@ -315,6 +321,45 @@ pub fn relevance_from_decisions(
                 .filter(|p| (0.0..=1.0).contains(p))
                 .ok_or_else(|| {
                     format!("the answer for {} is not a noul probability: {answer}", chunk.id)
+                })
+        })
+        .collect()
+}
+
+/// The Decisions API request asking `questions` about `state`: one `noul` question each.
+pub fn noul_body(model_id: &ModelId, state: &Value, questions: &[NoulQuestion]) -> Value {
+    let questions: serde_json::Map<String, Value> = questions
+        .iter()
+        .map(|question| {
+            let body = json!({
+                "type": "noul",
+                "instructions": question.instructions,
+                "criteria": {"true": question.if_true, "false": question.if_false},
+            });
+            (question.key.clone(), body)
+        })
+        .collect();
+    json!({"model": model_id.as_str(), "questions": questions, "state": state})
+}
+
+/// Each question's probability from a Decisions API response to [`noul_body`], in order.
+pub fn noul_answers(questions: &[NoulQuestion], response: &Value) -> Result<Vec<f64>, String> {
+    let answers = response
+        .get("answers")
+        .and_then(Value::as_object)
+        .ok_or("the Decisions response has no `answers` object")?;
+    questions
+        .iter()
+        .map(|question| {
+            let answer = answers.get(&question.key).ok_or_else(|| {
+                format!("the Decisions response has no answer for {}", question.key)
+            })?;
+            answer
+                .get("noul")
+                .and_then(Value::as_f64)
+                .filter(|p| (0.0..=1.0).contains(p))
+                .ok_or_else(|| {
+                    format!("the answer for {} is not a noul probability: {answer}", question.key)
                 })
         })
         .collect()

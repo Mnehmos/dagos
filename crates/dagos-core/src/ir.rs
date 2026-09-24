@@ -9,8 +9,8 @@ use std::collections::BTreeSet;
 use crate::contracts::{Contract, ContractViolation};
 use crate::domain::{
     ConversationTurn, ErrorCode, EventData, InferenceIr, InferenceIrSchema, IrContextItem, IrEvent,
-    IrEventType, IrRecalledTurn, IrRelation, IrTask, IrTool, IrToolResult, IrToolStatus, NodeId,
-    NodeType, Role, RunId, RunStatus,
+    IrEventType, IrRecalledTurn, IrRelation, IrReview, IrTask, IrTool, IrToolResult, IrToolStatus,
+    NodeId, NodeType, Role, RunId, RunStatus,
 };
 use crate::store::{StoreError, Tx};
 
@@ -27,6 +27,8 @@ pub struct IrHistory<'a> {
     pub recalled: &'a [IrRecalledTurn],
     /// Call IDs whose outputs `tool_results` replaces with a note.
     pub omitted: &'a BTreeSet<String>,
+    /// The latest review of the run's changed code, if it found anything.
+    pub review: Option<&'a IrReview>,
 }
 
 /// Why IR could not be compiled.
@@ -52,7 +54,8 @@ pub fn compile(
     tools: &[IrTool],
 ) -> Result<InferenceIr, CompileError> {
     let omitted = BTreeSet::new();
-    let history = IrHistory { window: RECENT_RUN_OUTCOMES, recalled: &[], omitted: &omitted };
+    let history =
+        IrHistory { window: RECENT_RUN_OUTCOMES, recalled: &[], omitted: &omitted, review: None };
     compile_with(tx, run_id, task_node, tools, history)
 }
 
@@ -101,6 +104,7 @@ pub fn compile_with(
         tools: tools.to_vec(),
         tool_results: tool_results(tx, run_id, history.omitted)?,
         recalled: history.recalled.to_vec(),
+        review: history.review.cloned(),
     };
     Contract::InferenceIr.validate(&serde_json::to_value(&ir).expect("IR serializes"))?;
     Ok(ir)

@@ -6,8 +6,8 @@
 
 use dagos_core::domain::{
     ContextClassification, ContextMember, Conversation, ConversationId, DagEdge, DagNode, EdgeId,
-    Event, EventData, InferenceIr, InferenceResponse, JevRequest, ModelId, NodeId, Payload,
-    Project, ProjectId, ProviderId, Run, RunConfig, RunId, RunStatus, ToolDecider,
+    Event, EventData, InferenceIr, InferenceResponse, IrFinding, JevRequest, ModelId, NodeId,
+    Payload, Project, ProjectId, ProviderId, Run, RunConfig, RunId, RunStatus, ToolDecider,
 };
 use dagos_core::store::{Store, StoreError};
 use dagos_mcp::Capabilities;
@@ -86,6 +86,18 @@ pub enum TurnItem {
     Prose { text: String },
     /// A tool call and what came of it.
     Tool(ToolCallView),
+    /// A semantic lint review of the code the turn changed.
+    Review(ReviewView),
+}
+
+/// A review as the chat and the inspector show it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewView {
+    pub round: u32,
+    /// How many changed functions were judged.
+    pub judged: u32,
+    pub findings: Vec<IrFinding>,
+    pub error: Option<String>,
 }
 
 /// A tool call as the chat and the inspector show it.
@@ -223,6 +235,8 @@ pub struct RunDetail {
     pub failure: Option<FailureView>,
     /// Tool calls the run's responses asked for, in order, with what came of them.
     pub tool_calls: Vec<ToolCallView>,
+    /// The semantic lint reviews of the code the run changed, in order.
+    pub reviews: Vec<ReviewView>,
     pub events: Vec<Event>,
 }
 
@@ -328,11 +342,11 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
     let mut streamed = String::new();
     let mut validated: Vec<String> = Vec::new();
     let mut calls: Vec<ToolCallView> = Vec::new();
-    let mut order: Vec<Result<String, String>> = Vec::new(); // Ok(prose) or Err(call id)
+    let mut order: Vec<Step> = Vec::new();
     for event in events {
         if apply_tool_event(&mut calls, &event.data) {
             if let EventData::ToolRequested { call_id, .. } = &event.data {
-                order.push(Err(call_id.clone()));
+                order.push(Step::Call(call_id.clone()));
             }
             continue;
         }
@@ -363,21 +377,32 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
             EventData::ResponseValidated { response } => {
                 let prose = response.presentation.prose.clone();
                 if !prose.trim().is_empty() {
-                    order.push(Ok(prose.clone()));
+                    order.push(Step::Prose(prose.clone()));
                     validated.push(prose);
                 }
                 streamed.clear();
             }
             EventData::DagNodeCreated { .. } => view.emitted_nodes += 1,
             EventData::DagEdgeCreated { .. } => view.emitted_edges += 1,
+            EventData::ReviewCompleted { round, judged, findings, error } => {
+                order.push(Step::Review(ReviewView {
+                    round: *round,
+                    judged: *judged,
+                    findings: findings.clone(),
+                    error: error.clone(),
+                }));
+            }
             _ => {}
         }
     }
     view.items = order
         .into_iter()
         .filter_map(|entry| match entry {
-            Ok(text) => Some(TurnItem::Prose { text }),
-            Err(id) => calls.iter().find(|call| call.call_id == id).cloned().map(TurnItem::Tool),
+            Step::Prose(text) => Some(TurnItem::Prose { text }),
+            Step::Call(id) => {
+                calls.iter().find(|call| call.call_id == id).cloned().map(TurnItem::Tool)
+            }
+            Step::Review(review) => Some(TurnItem::Review(review)),
         })
         .collect();
     view.prose = if validated.is_empty() { streamed.clone() } else { validated.join("\n\n") };
@@ -388,6 +413,14 @@ fn turn(run: Run, events: &[Event], context_size: usize) -> TurnView {
         view.failure = failure(events);
     }
     view
+}
+
+/// A step of a turn while its events are read.
+enum Step {
+    Prose(String),
+    /// A tool call, by call ID.
+    Call(String),
+    Review(ReviewView),
 }
 
 /// Why a failed run stopped: its `run.failed` event and the rejection that explains it, if any.
@@ -458,6 +491,7 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
         emitted_edges: Vec::new(),
         failure: None,
         tool_calls: Vec::new(),
+        reviews: Vec::new(),
         events: Vec::new(),
     };
     let mut rejection: Option<(&'static str, String)> = None;
@@ -492,6 +526,14 @@ pub fn run_detail(store: &Store, id: &RunId) -> Result<Option<RunDetail>, StoreE
             EventData::ContextAdded { node_id } => detail.context_added.push(node_id.clone()),
             EventData::ContextRemoved { node_id } => detail.context_removed.push(node_id.clone()),
             EventData::IrCompiled { ir } => detail.ir = Some(ir.clone()),
+            EventData::ReviewCompleted { round, judged, findings, error } => {
+                detail.reviews.push(ReviewView {
+                    round: *round,
+                    judged: *judged,
+                    findings: findings.clone(),
+                    error: error.clone(),
+                });
+            }
             EventData::InferenceDelta { text } => detail.streamed.push_str(text),
             EventData::InferenceCompleted { output } => detail.output = Some(output.clone()),
             EventData::ResponseValidated { response } => detail.response = Some(response.clone()),

@@ -196,6 +196,25 @@ export function toolGroupHtml(calls, runId) {
   </details>`;
 }
 
+/** A lint review of the code the turn changed: clean, or the rules its judge found to apply. */
+export function reviewHtml(review, runId) {
+  if (review.error) {
+    return `<div class="review review-error"><span class="review-icon" aria-hidden="true">◇</span>Review ${review.round} could not run: ${esc(review.error)}</div>`;
+  }
+  const count = review.findings.length;
+  const judged = `${review.judged} changed function${review.judged === 1 ? "" : "s"}`;
+  if (!count) {
+    return `<div class="review review-clean"><span class="review-icon" aria-hidden="true">✓</span>Review ${review.round}: ${judged} judged, no rule applies</div>`;
+  }
+  const rows = review.findings
+    .map((finding) => `<li><span class="review-p" title="Probability the rule applies">${finding.probability.toFixed(2)}</span><span class="review-rule">${esc(finding.text)}</span><code>${esc(finding.function)}</code><span class="review-where">${esc(finding.file)}:${finding.line}</span></li>`)
+    .join("");
+  return `<details class="review review-found" data-card="${esc(`${runId}:review:${review.round}`)}" open>
+    <summary><span class="review-icon" aria-hidden="true">◆</span>Review ${review.round}: ${count} finding${count === 1 ? "" : "s"} in ${judged} <span class="review-note">handed back to the model</span></summary>
+    <ul class="review-findings">${rows}</ul>
+  </details>`;
+}
+
 /** One turn: the user's message, then each reply and tool call in order (streaming, rendered, or failed). */
 export function turnHtml(turn, { live = null } = {}) {
   const run = turn.run;
@@ -203,6 +222,11 @@ export function turnHtml(turn, { live = null } = {}) {
   const items = turn.items ?? (turn.prose ? [{ kind: "prose", text: turn.prose }] : []);
   const steps = [];
   for (let index = 0; index < items.length; ) {
+    if (items[index].kind === "review") {
+      steps.push(reviewHtml(items[index], run.id));
+      index += 1;
+      continue;
+    }
     if (items[index].kind !== "tool") {
       steps.push(`<div class="bubble assistant"><div class="md">${markdownHtml(items[index].text)}</div></div>`);
       index += 1;

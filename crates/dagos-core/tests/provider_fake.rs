@@ -37,6 +37,7 @@ fn ir() -> InferenceIr {
         tools: vec![],
         tool_results: vec![],
         recalled: Vec::new(),
+        review: None,
     }
 }
 

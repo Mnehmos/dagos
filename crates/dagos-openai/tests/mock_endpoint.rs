@@ -114,6 +114,7 @@ fn ir() -> InferenceIr {
         tools: vec![],
         tool_results: vec![],
         recalled: vec![],
+        review: None,
     }
 }
 

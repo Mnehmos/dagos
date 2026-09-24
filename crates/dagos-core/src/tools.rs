@@ -9,7 +9,7 @@
 
 use async_trait::async_trait;
 
-use crate::domain::{Payload, RunId, ToolDecider};
+use crate::domain::{IrFinding, Payload, RunId, ToolDecider};
 
 /// A tool call a validated response asked for.
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +46,36 @@ pub trait ToolGate: Send + Sync {
 pub trait ToolExecutor: Send + Sync {
     /// Runs `request`. `Err` means the tool could not be reached or run at all.
     async fn call(&self, request: &ToolRequest) -> Result<ToolOutput, String>;
+}
+
+/// What a review of a run's changed code found.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Review {
+    pub findings: Vec<IrFinding>,
+    /// How many functions were judged; 0 means the run changed no code the reviewer checks.
+    pub judged: usize,
+    /// Identifies the reviewed code; an unchanged fingerprint means nothing changed since the
+    /// previous review.
+    pub fingerprint: String,
+}
+
+/// Reviews the code a run changes, e.g. a semantic linter.
+///
+/// A model reaches files only through tool calls, and the runtime shows the reviewer every
+/// permitted call before it runs, so the reviewer can remember what the files it names looked
+/// like. The runtime asks for a review each time the model replies without tool calls, and hands
+/// findings back to the model until a review finds nothing, the code stops changing, or the run
+/// reaches its review limit.
+#[async_trait]
+pub trait Reviewer: Send + Sync {
+    /// A permitted call is about to run in `run_id` and may change what it names.
+    async fn before_call(&self, run_id: &RunId, request: &ToolRequest);
+
+    /// Reviews what the run's calls changed.
+    async fn review(&self, run_id: &RunId) -> Result<Review, String>;
+
+    /// The run finished; forget it.
+    fn end(&self, run_id: &RunId);
 }
 
 /// A gate that allows every call, by policy. For tests and fully trusted setups.

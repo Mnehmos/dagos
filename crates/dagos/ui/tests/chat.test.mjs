@@ -10,6 +10,7 @@ import {
   markdownHtml,
   projectMenuHtml,
   relativeTime,
+  reviewHtml,
   threadHtml,
 } from "../js/chat.js";
 
@@ -85,6 +86,27 @@ test("turns show the message, the reply, failures, and Jev fallbacks", () => {
   assert.ok(html.includes("Jev fallback"));
   assert.ok(html.includes('data-live-run="run_3">Stream&lt;ing&gt;'), "streamed prose is plain, escaped text");
   assert.equal((html.match(/data-inspect=/g) ?? []).length, 2, "finished turns can be inspected");
+});
+
+test("reviews show findings, clean results, and errors in the turn", () => {
+  const run = { id: "run_9", status: "completed", provider_id: "openrouter", model_id: "m" };
+  const finding = { rule: "swallows-errors", text: "Swallows <errors>.", file: "src/lib.rs", function: "load", line: 5, probability: 0.934 };
+  const html = threadHtml({
+    turns: [{
+      run, message: "Fix it", prose: "", context_size: 0, jev_id: null, jev_fallback: false, emitted_nodes: 0, emitted_edges: 0, failure: null,
+      items: [
+        { kind: "prose", text: "Done." },
+        { kind: "review", round: 1, judged: 2, findings: [finding], error: null },
+        { kind: "prose", text: "Fixed the finding." },
+        { kind: "review", round: 2, judged: 1, findings: [], error: null },
+      ],
+    }],
+  });
+  assert.ok(html.includes("Review 1: 1 finding in 2 changed functions"));
+  assert.ok(html.includes("0.93") && html.includes("src/lib.rs:5") && html.includes("Swallows &lt;errors&gt;."));
+  assert.ok(html.includes("Review 2: 1 changed function judged, no rule applies"));
+  assert.ok(html.indexOf("Done.") < html.indexOf("Review 1") && html.indexOf("Review 1") < html.indexOf("Fixed the finding."), "in order");
+  assert.ok(reviewHtml({ round: 1, judged: 0, findings: [], error: "Jev <down>" }, "run_9").includes("could not run: Jev &lt;down&gt;"));
 });
 
 test("headers and menus escape names", () => {

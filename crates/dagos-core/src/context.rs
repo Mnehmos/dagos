@@ -11,7 +11,7 @@ mod projection;
 pub mod recall;
 
 pub use fake_jev::{DEFAULT_CONVERSATION_WINDOW, FakeJev};
-pub use jev::{JevClassifier, JevError};
+pub use jev::{JevClassifier, JevError, NoulQuestion};
 pub use projection::{
     ClassificationError, ContextChanges, apply_classification, carry_context,
     classification_request, validate_classification,

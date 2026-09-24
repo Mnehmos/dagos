@@ -33,6 +33,37 @@ pub struct InferenceIr {
     /// judged relevant to this request, oldest first; omitted when there are none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recalled: Vec<IrRecalledTurn>,
+    /// The review of the model's previous reply in this run: rules Jev judged to apply to code
+    /// the run changed. Omitted until a review finds something.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<IrReview>,
+}
+
+/// A review of the code a run changed, handed back to the model to address.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrReview {
+    /// Which review this is (1 for the first) and how many the run may have.
+    pub round: u32,
+    pub max_rounds: u32,
+    pub findings: Vec<IrFinding>,
+}
+
+/// A semantic lint finding: a project rule Jev judged to apply to a function.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IrFinding {
+    /// The rule's ID, e.g. `swallows-errors`.
+    pub rule: String,
+    /// The rule in plain English, e.g. "Swallows errors."
+    pub text: String,
+    /// The file, relative to the project root, with `/` separators.
+    pub file: String,
+    pub function: String,
+    /// The function's first line, counting from 1.
+    pub line: u32,
+    /// Jev's probability that the rule applies.
+    pub probability: f64,
 }
 
 /// A tool output's text parts (the `content` of MCP-shaped output), or its JSON when it has none.

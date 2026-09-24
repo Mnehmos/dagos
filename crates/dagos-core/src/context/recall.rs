@@ -132,6 +132,14 @@ fn turn_text(events: &[EventData]) -> String {
                 lines.push(format!("assistant: {}", response.presentation.prose));
             }
             EventData::RunFailed { message, .. } => lines.push(format!("failed: {message}")),
+            EventData::ReviewCompleted { round, findings, .. } => {
+                for finding in findings {
+                    lines.push(format!(
+                        "lint round {round}: {} {} ({}:{})",
+                        finding.text, finding.function, finding.file, finding.line
+                    ));
+                }
+            }
             _ => {}
         }
     }

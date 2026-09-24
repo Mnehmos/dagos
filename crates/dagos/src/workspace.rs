@@ -10,6 +10,7 @@ use dagos_core::provider::FakeProvider;
 use dagos_core::runtime::Runtime;
 use dagos_core::store::{EventListener, Store, StoreError};
 use dagos_core::tools::{ToolExecutor, ToolGate};
+use dagos_lint::{LINT_FILE, LintConfig, LintReviewer};
 use dagos_mcp::{Capabilities, McpConfig, McpPool};
 
 use crate::approvals::{APPROVAL_TIMEOUT, Approvals};
@@ -277,7 +278,22 @@ fn build(
     for provider in loaded.providers {
         runtime = runtime.with_provider(provider);
     }
+    match LintConfig::load(&dir.join(LINT_FILE)) {
+        Ok(lint) if lint.enabled => {
+            let rounds = lint.max_rounds;
+            let reviewer = LintReviewer::new(&project_root(dir), loaded.jev.clone(), lint);
+            runtime = runtime.with_reviewer(Arc::new(reviewer), rounds);
+        }
+        Ok(_) => {}
+        Err(error) => eprintln!("warning: the review loop is off: {error}"),
+    }
     Ok(Live { runtime: Arc::new(runtime), settings: loaded.settings, endpoints: loaded.endpoints })
+}
+
+/// The project's root directory: the one containing the DAGOS directory.
+pub fn project_root(dir: &Path) -> PathBuf {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    dir.parent().map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
 fn open_store(database: &Path) -> Result<Store, String> {

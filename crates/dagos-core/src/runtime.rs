@@ -25,14 +25,14 @@ use crate::context::{
 use crate::domain::{Classification, JevToolCandidate};
 use crate::domain::{
     ContextClassification, ConversationId, ConversationTurn, Emission, EmissionRef, Endpoint,
-    ErrorCode, EventData, InferenceIr, IrRecalledTurn, IrTool, JevRequest, NodeId, NodeType,
-    ProjectId, ProviderId, Run, RunConfig, RunId, ToolDecider,
+    ErrorCode, EventData, InferenceIr, IrRecalledTurn, IrReview, IrTool, JevRequest, NodeId,
+    NodeType, ProjectId, ProviderId, Run, RunConfig, RunId, ToolDecider,
 };
 use crate::ir::{CompileError, IrHistory, RECENT_RUN_OUTCOMES, compile_with};
 use crate::provider::{DeltaSink, InferenceProvider, InferenceRequest};
 use crate::response::{ValidatedResponse, validate_response};
 use crate::store::{Store, StoreError, Tx};
-use crate::tools::{ToolDecision, ToolExecutor, ToolGate, ToolOutput, ToolRequest};
+use crate::tools::{Reviewer, ToolDecision, ToolExecutor, ToolGate, ToolOutput, ToolRequest};
 
 /// How long a provider may take to return its final output, unless configured otherwise.
 pub const DEFAULT_INFERENCE_TIMEOUT: Duration = Duration::from_secs(180);
@@ -81,9 +81,14 @@ pub struct Runtime {
     max_tool_steps: usize,
     tool_timeout: Duration,
     conversation_window: usize,
+    reviewer: Option<Arc<dyn Reviewer>>,
+    max_review_rounds: usize,
     inference_timeout: Duration,
     jev_timeout: Duration,
 }
+
+/// How many reviews one run may have by default.
+pub const DEFAULT_MAX_REVIEW_ROUNDS: usize = 3;
 
 /// How many rounds of tool calls one run may execute by default.
 pub const DEFAULT_MAX_TOOL_STEPS: usize = 8;
@@ -103,6 +108,8 @@ impl Runtime {
             max_tool_steps: DEFAULT_MAX_TOOL_STEPS,
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
             conversation_window: RECENT_RUN_OUTCOMES,
+            reviewer: None,
+            max_review_rounds: DEFAULT_MAX_REVIEW_ROUNDS,
             inference_timeout: DEFAULT_INFERENCE_TIMEOUT,
             jev_timeout: DEFAULT_JEV_TIMEOUT,
         }
@@ -156,6 +163,15 @@ impl Runtime {
         self
     }
 
+    /// Reviews the code runs change: each time the model replies without tool calls, `reviewer`
+    /// judges what the run changed, and its findings go back to the model in the next IR until a
+    /// review finds nothing, the code stops changing, or `max_rounds` reviews have run.
+    pub fn with_reviewer(mut self, reviewer: Arc<dyn Reviewer>, max_rounds: usize) -> Self {
+        self.reviewer = Some(reviewer);
+        self.max_review_rounds = max_rounds;
+        self
+    }
+
     /// How many of the conversation's most recent earlier turns IR carries. Jev recalls older
     /// turns, and turns of other chats, when they are relevant.
     pub fn with_conversation_window(mut self, turns: usize) -> Self {
@@ -174,6 +190,11 @@ impl Runtime {
 
     pub fn jev(&self) -> &dyn JevClassifier {
         self.jev.as_ref()
+    }
+
+    /// The primary Jev, shared, e.g. for a linter that asks it questions of its own.
+    pub fn shared_jev(&self) -> Arc<dyn JevClassifier> {
+        self.jev.clone()
     }
 
     /// Registered providers, ordered by ID.
@@ -294,6 +315,9 @@ impl Runtime {
                 format!("provider `{}` is not registered", run.provider_id),
             )),
         };
+        if let Some(reviewer) = &self.reviewer {
+            reviewer.end(&run.id);
+        }
         match outcome {
             Ok(completed) => Ok(completed),
             Err(failure) => Ok(self.store.transaction(|tx| {
@@ -318,6 +342,8 @@ impl Runtime {
         let mut latest_round = BTreeSet::new();
         let mut latest_step = String::new();
         let mut omitted = BTreeSet::new();
+        let mut review: Option<IrReview> = None;
+        let mut reviews = ReviewState::default();
         let mut rounds = 0;
         let mut next_call = 1;
         loop {
@@ -329,6 +355,7 @@ impl Runtime {
                 window: self.conversation_window,
                 recalled: &recalled,
                 omitted: &omitted,
+                review: review.as_ref(),
             };
             let ir = self.compile_ir(run, task, &tools, history)?;
             let raw = self.infer(run, &ir, provider).await?;
@@ -348,7 +375,13 @@ impl Runtime {
                 }
             })?;
             if calls.is_empty() {
-                break;
+                match self.review(run, &mut reviews).await? {
+                    Some(next) => {
+                        review = Some(next);
+                        continue;
+                    }
+                    None => break,
+                }
             }
             rounds += 1;
             let over_limit = rounds > self.max_tool_steps;
@@ -415,6 +448,9 @@ impl Runtime {
         let Some((executor, _)) = self.tool_runner.as_ref().filter(|_| allowed) else {
             return Ok(());
         };
+        if let Some(reviewer) = &self.reviewer {
+            reviewer.before_call(&run.id, &request).await;
+        }
         let output = match tokio::time::timeout(self.tool_timeout, executor.call(&request)).await {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
@@ -438,6 +474,54 @@ impl Runtime {
             )
         })?;
         Ok(())
+    }
+
+    /// Reviews the code the run changed after the model replied without tool calls, records the
+    /// review, and returns it when the model must address it: it found something, the code
+    /// changed since the previous review, and the run has reviews left. A review that judged
+    /// nothing (no code changed) is not recorded.
+    async fn review(
+        &self,
+        run: &Run,
+        state: &mut ReviewState,
+    ) -> Result<Option<IrReview>, StageFailure> {
+        let Some(reviewer) = &self.reviewer else { return Ok(None) };
+        if state.rounds >= self.max_review_rounds {
+            return Ok(None);
+        }
+        let outcome = tokio::time::timeout(self.tool_timeout, reviewer.review(&run.id))
+            .await
+            .unwrap_or_else(|_elapsed| Err(format!("no review within {:?}", self.tool_timeout)));
+        let (review, error) = match outcome {
+            Ok(review) => (review, None),
+            Err(error) => (Default::default(), Some(error)),
+        };
+        if review.judged == 0 && error.is_none() {
+            return Ok(None);
+        }
+        state.rounds += 1;
+        let round = state.rounds as u32;
+        self.store.transaction(|tx| {
+            tx.append_event(
+                &run.id,
+                EventData::ReviewCompleted {
+                    round,
+                    judged: review.judged as u32,
+                    findings: review.findings.clone(),
+                    error,
+                },
+            )
+        })?;
+        let unchanged = state.fingerprint.as_deref() == Some(review.fingerprint.as_str());
+        if review.findings.is_empty() || unchanged || state.rounds >= self.max_review_rounds {
+            return Ok(None);
+        }
+        state.fingerprint = Some(review.fingerprint);
+        Ok(Some(IrReview {
+            round,
+            max_rounds: self.max_review_rounds as u32,
+            findings: review.findings,
+        }))
     }
 
     /// Asks Jev which of the project's earlier turns outside this run's recent window (any chat)
@@ -642,6 +726,14 @@ impl Runtime {
         })?;
         Ok(raw)
     }
+}
+
+/// The reviews a run has had so far.
+#[derive(Default)]
+struct ReviewState {
+    rounds: usize,
+    /// The fingerprint of the code the latest review handed back.
+    fingerprint: Option<String>,
 }
 
 /// The longest tool description Jev is shown; the model still gets the full description.

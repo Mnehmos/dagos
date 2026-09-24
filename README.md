@@ -119,6 +119,27 @@ The model's classification is applied as the context; it can never write to the 
 choose providers. Each run's `jev.requested` event records which classifier was asked, e.g.
 `openrouter-jev:<model>`, and the inspector's Jev tab shows who classified and why.
 
+### Semantic lint and the review loop
+
+Syntax linters cannot check meaning; this one does. A project's lint rules are plain-English
+sentences, "Swallows errors.", "Has a hidden side effect.", "Does too many jobs.", and 11 more by
+default. Jev (TypeSafe's) answers one calibrated yes/no question per rule for each function, all
+functions in parallel.
+
+- **The review loop.** A model reaches files only through tool calls, so before each permitted
+  call DAGOS remembers the project files it names (paths, and file names inside shell commands).
+  When the model replies without tool calls, the functions it changed are linted; findings at or
+  above the threshold go back to the model (`review` in the IR) and the run continues, until a
+  review is clean, the code stops changing, or three reviews have run. The chat shows each review
+  under the turn. A finding the model disagrees with is answered in prose, not "fixed".
+- **Rules** live in `.dagos/lint.json` (without it, the defaults apply):
+  `{"threshold": 0.7, "max_rounds": 3, "rules": [{"id": "swallows-errors", "text": "Swallows
+  errors.", "applies": "…", "except": "…"}]}`. `"enabled": false` turns the loop off.
+- **CI:** `dagos lint [files]` judges every function in the files (default: files changed since the
+  last commit) and exits 1 when a rule applies; `--json` prints every judgment.
+- Rust, JavaScript, TypeScript, and Python are read. Without a Jev that answers yes/no questions,
+  nothing is reviewed. Edits a shell command makes to files it does not name are not seen.
+
 ### Tools: MCP servers (optional)
 
 DAGOS works without tools. With them, a model can act: read files, run commands, drive a browser.

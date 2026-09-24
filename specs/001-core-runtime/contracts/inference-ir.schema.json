@@ -62,6 +62,32 @@
         "additionalProperties": false
       }
     },
+    "review": {
+      "description": "The review of the model's previous reply in this run: project rules Jev judged to apply to functions the run changed. Present while findings need addressing.",
+      "type": "object",
+      "required": ["round", "max_rounds", "findings"],
+      "properties": {
+        "round": {"type": "integer", "minimum": 1},
+        "max_rounds": {"type": "integer", "minimum": 1},
+        "findings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["rule", "text", "file", "function", "line", "probability"],
+            "properties": {
+              "rule": {"type": "string", "minLength": 1},
+              "text": {"type": "string", "minLength": 1},
+              "file": {"type": "string"},
+              "function": {"type": "string"},
+              "line": {"type": "integer", "minimum": 1},
+              "probability": {"type": "number", "minimum": 0, "maximum": 1}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "recalled": {
       "description": "Earlier turns from any chat of the project that are not in recent_events but that Jev judged relevant to this request, verbatim, oldest first. Only present when there are some.",
       "type": "array",

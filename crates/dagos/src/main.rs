@@ -62,6 +62,19 @@ enum Command {
         #[command(subcommand)]
         action: Option<Keys>,
     },
+    /// Lint functions against the project's plain-English rules in `.dagos/lint.json` (needs a
+    /// Jev that answers yes/no questions, e.g. TypeSafe's). Exits 1 when a rule applies.
+    Lint {
+        /// Files to lint, relative to the project root (default: files changed since the last
+        /// commit, including new ones).
+        files: Vec<String>,
+        /// The probability at which a rule counts as applying (default: the configured one).
+        #[arg(long)]
+        threshold: Option<f64>,
+        /// Print every judgment as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Serve the inspection API on a local port.
     Serve {
         /// Address to bind; loopback by default so the workspace stays local.
@@ -164,6 +177,74 @@ impl Selection {
     }
 }
 
+async fn lint(
+    dir: &std::path::Path,
+    files: Vec<String>,
+    threshold: Option<f64>,
+    as_json: bool,
+    timeout: Duration,
+) -> Result<ExitCode, String> {
+    let workspace = Workspace::open(dir, None, timeout)?;
+    let root = workspace::project_root(dir);
+    let mut config = dagos_lint::LintConfig::load(&dir.join(dagos_lint::LINT_FILE))?;
+    if let Some(threshold) = threshold {
+        config.threshold = threshold;
+    }
+    let files = if files.is_empty() { changed_files(&root)? } else { files };
+    let jev = workspace.runtime().shared_jev();
+    let report = dagos_lint::lint_files(&root, &files, jev, &config).await?;
+    if as_json {
+        let judgments: Vec<_> = report
+            .units
+            .iter()
+            .zip(&report.judgments)
+            .map(|(unit, row)| {
+                let scores: serde_json::Map<_, _> =
+                    config.rules.iter().zip(row).map(|(rule, p)| (rule.id.clone(), json!(p))).collect();
+                json!({"file": unit.file, "function": unit.function.name, "line": unit.function.line, "judgments": scores})
+            })
+            .collect();
+        let out = json!({"threshold": config.threshold, "functions": judgments, "findings": report.findings});
+        println!("{}", serde_json::to_string_pretty(&out).expect("report serializes"));
+    } else {
+        for finding in &report.findings {
+            println!(
+                "{}:{} {}  {} ({:.2})",
+                finding.file, finding.line, finding.function, finding.text, finding.probability
+            );
+        }
+        println!(
+            "{} function(s), {} rule(s), {} judgment(s): {} finding(s) at {:.2} or above.",
+            report.units.len(),
+            config.rules.len(),
+            report.units.len() * config.rules.len(),
+            report.findings.len(),
+            config.threshold
+        );
+    }
+    Ok(if report.findings.is_empty() { ExitCode::SUCCESS } else { ExitCode::from(1) })
+}
+
+/// Files changed since the last commit, and new files, relative to `root` (from git).
+fn changed_files(root: &std::path::Path) -> Result<Vec<String>, String> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=all"])
+        .current_dir(root)
+        .output()
+        .map_err(|error| format!("cannot run git to find changed files: {error}"))?;
+    if !output.status.success() {
+        return Err("git status failed; name the files to lint".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.len() > 3 && !line.starts_with(" D") && !line.starts_with("D "))
+        .map(|line| {
+            let path = &line[3..];
+            path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"').to_owned()
+        })
+        .collect())
+}
+
 fn keys(action: Keys) -> Result<ExitCode, String> {
     let store = KeyStore::for_user(|name| std::env::var(name).ok())
         .ok_or("no user configuration directory; set DAGOS_CONFIG_DIR")?;
@@ -251,6 +332,9 @@ async fn execute(cli: Cli) -> Result<ExitCode, String> {
             Ok(ExitCode::SUCCESS)
         }
         Command::Run(args) => run(&cli.dir, args, timeout).await,
+        Command::Lint { files, threshold, json } => {
+            lint(&cli.dir, files, threshold, json, timeout).await
+        }
         Command::Recover => {
             let workspace = Workspace::open(&cli.dir, None, timeout)?;
             let recovered =

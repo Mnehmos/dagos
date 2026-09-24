@@ -11,6 +11,18 @@ use crate::domain::JevRequest;
 #[error("Jev classifier unavailable: {0}")]
 pub struct JevError(pub String);
 
+/// One yes/no question for [`JevClassifier::decide`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct NoulQuestion {
+    /// Unique among the questions of one request.
+    pub key: String,
+    /// What to decide, as JSON the judge reads.
+    pub instructions: serde_json::Value,
+    /// When the answer is yes, and when it is no.
+    pub if_true: String,
+    pub if_false: String,
+}
+
 /// A Jev classifier endpoint.
 ///
 /// Implementations only classify: they receive a `kiss.jev-request.v1` request and return raw
@@ -31,6 +43,17 @@ pub trait JevClassifier: Send + Sync {
         &self,
         _query: &str,
         _chunks: &[RecallChunk],
+    ) -> Result<Option<Vec<f64>>, JevError> {
+        Ok(None)
+    }
+
+    /// Answers each yes/no question about `state` with the probability that it is true, in
+    /// question order: the general form of Jev's judgments, e.g. whether a lint rule applies to a
+    /// function. `None` means this classifier cannot. The default.
+    async fn decide(
+        &self,
+        _state: &serde_json::Value,
+        _questions: &[NoulQuestion],
     ) -> Result<Option<Vec<f64>>, JevError> {
         Ok(None)
     }

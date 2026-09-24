@@ -3064,3 +3064,84 @@ tr.tool-hidden code {
     transition: none !important;
   }
 }
+
+/* Lint reviews in a turn */
+.review {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 13px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.review-icon {
+  font-size: 12px;
+}
+
+.review-clean {
+  color: var(--ok);
+  background: var(--ok-soft);
+  border-color: transparent;
+}
+
+.review-error {
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-color: transparent;
+}
+
+details.review-found {
+  display: block;
+  border-color: var(--warn-soft);
+}
+
+.review-found > summary {
+  cursor: pointer;
+  color: var(--warn);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.review-note {
+  color: var(--text-3);
+  font-weight: normal;
+}
+
+.review-findings {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.review-findings li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.review-p {
+  font-family: var(--font-mono);
+  color: var(--warn);
+  flex-shrink: 0;
+}
+
+.review-rule {
+  color: var(--text);
+}
+
+.review-where {
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}

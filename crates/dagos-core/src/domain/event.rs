@@ -102,6 +102,17 @@ pub enum EventData {
     /// goes back to the model through the next IR and never becomes DAG state by itself.
     #[serde(rename = "tool.completed")]
     ToolCompleted { call_id: String, output: serde_json::Value, is_error: bool },
+    /// The code the run changed was reviewed after the model replied: `judged` functions were
+    /// checked against the project's rules and `findings` are the rules Jev judged to apply. A
+    /// review that could not run records its `error` and ends the review loop, not the run.
+    #[serde(rename = "review.completed")]
+    ReviewCompleted {
+        round: u32,
+        judged: u32,
+        findings: Vec<super::IrFinding>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// The final output was validated and its emissions applied, atomically with this event.
     #[serde(rename = "response.validated")]
     ResponseValidated { response: InferenceResponse },

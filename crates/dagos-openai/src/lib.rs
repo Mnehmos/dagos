@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dagos_core::context::recall::RecallChunk;
-use dagos_core::context::{JevClassifier, JevError};
+use dagos_core::context::{JevClassifier, JevError, NoulQuestion};
 use dagos_core::domain::JevRequest;
 use dagos_core::domain::{ModelId, ProviderId};
 use dagos_core::provider::{DeltaSink, InferenceProvider, InferenceRequest, ProviderError};
@@ -23,8 +23,8 @@ use serde_json::Value;
 pub use prose::ProseExtractor;
 pub use protocol::{
     ACTIVE_THRESHOLD, RECALL_BATCH_CHARS, classification_from_decisions, decisions_body,
-    jev_request_body, jev_system_message, recall_batches, recall_body, relevance_from_decisions,
-    request_body, system_message, unwrap_document, user_message,
+    jev_request_body, jev_system_message, noul_answers, noul_body, recall_batches, recall_body,
+    relevance_from_decisions, request_body, system_message, unwrap_document, user_message,
 };
 pub use sse::SseDecoder;
 
@@ -303,7 +303,7 @@ impl JevClassifier for DecisionsJev {
             return classification_from_decisions(request, &serde_json::json!({"answers": {}}))
                 .map_err(JevError);
         }
-        let response = self.decide(decisions_body(&self.model, request)).await?;
+        let response = self.decide_raw(decisions_body(&self.model, request)).await?;
         classification_from_decisions(request, &response).map_err(JevError)
     }
 
@@ -314,16 +314,28 @@ impl JevClassifier for DecisionsJev {
     ) -> Result<Option<Vec<f64>>, JevError> {
         let mut scores = Vec::with_capacity(chunks.len());
         for batch in recall_batches(chunks) {
-            let response = self.decide(recall_body(&self.model, query, batch)).await?;
+            let response = self.decide_raw(recall_body(&self.model, query, batch)).await?;
             scores.extend(relevance_from_decisions(batch, &response).map_err(JevError)?);
         }
         Ok(Some(scores))
+    }
+
+    async fn decide(
+        &self,
+        state: &Value,
+        questions: &[NoulQuestion],
+    ) -> Result<Option<Vec<f64>>, JevError> {
+        if questions.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let response = self.decide_raw(noul_body(&self.model, state, questions)).await?;
+        noul_answers(questions, &response).map(Some).map_err(JevError)
     }
 }
 
 impl DecisionsJev {
     /// Sends one Decisions API request and returns its JSON answer.
-    async fn decide(&self, body: Value) -> Result<Value, JevError> {
+    async fn decide_raw(&self, body: Value) -> Result<Value, JevError> {
         let http = self
             .chat
             .client
