@@ -329,3 +329,16 @@ fn corrupted_rows_fail_closed_on_read() {
     assert_eq!(store.transaction(|tx| tx.runs(&project)).unwrap().len(), 1);
     assert!(store.transaction(|tx| tx.edges(&project)).unwrap().is_empty());
 }
+
+#[test]
+fn file_stores_commit_through_a_write_ahead_log() {
+    // Every streamed delta is a committed event; WAL keeps those commits cheap.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dagos.sqlite3");
+    let store = Store::open(&path).unwrap();
+    store.transaction(|tx| tx.create_project("demo")).unwrap();
+    assert!(dir.path().join("dagos.sqlite3-wal").exists(), "commits go to the write-ahead log");
+    drop(store);
+    let reopened = Store::open(&path).unwrap();
+    assert_eq!(reopened.transaction(|tx| tx.projects()).unwrap().len(), 1, "and survive a restart");
+}
