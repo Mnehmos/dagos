@@ -255,3 +255,28 @@ async fn without_a_judging_jev_every_tool_result_is_kept() {
             .is_none())
     );
 }
+
+#[tokio::test]
+async fn every_relevant_turn_is_recalled_whole_with_no_count_limit() {
+    let jev = JudgingJev::new("shellfish");
+    let store = Arc::new(memory_store());
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let runtime = Runtime::new(store.clone(), jev.clone())
+        .with_provider(Arc::new(FakeProvider::new()))
+        .with_conversation_window(1);
+    let long = format!("shellfish notes: {}", "detail ".repeat(1500));
+    let mut messages: Vec<String> = (1..=8).map(|i| format!("shellfish fact {i}")).collect();
+    messages.push(long.clone());
+    messages.push("unrelated".into());
+    for message in &messages {
+        runtime.run(&project, message, &config("fake", "fake-echo")).await.unwrap();
+    }
+    let last =
+        runtime.run(&project, "What do we know?", &config("fake", "fake-echo")).await.unwrap();
+    let ir = &irs(&store, &last)[0];
+    // Ten earlier turns: the latest ("unrelated") is in recent_events, and the other nine (eight
+    // facts and the long note) all mention shellfish, so all nine are relevant.
+    assert_eq!(ir.recalled.len(), 9, "no cap on how many relevant turns are recalled");
+    let whole = ir.recalled.iter().find(|turn| turn.text.contains("shellfish notes")).unwrap();
+    assert!(whole.text.contains(&long), "a recalled turn arrives whole, not cut");
+}

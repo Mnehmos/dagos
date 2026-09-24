@@ -5,8 +5,8 @@
 //! every chat are already Jev candidates on every run. What is not a node is the turns
 //! themselves: replies and tool results. IR carries the chat's most recent turns; instead of
 //! summarizing the rest (and losing what a summary leaves out), DAGOS keeps every turn of every
-//! chat and asks Jev one relevance question per turn. Relevant turns reach IR verbatim as
-//! `recalled`. Inside a long run, the same question decides which large tool results from earlier
+//! chat and asks Jev one relevance question per turn. Every turn it judges relevant reaches IR,
+//! whole, as `recalled`: context is managed by relevance, never rationed by a count. Inside a long run, the same question decides which large tool results from earlier
 //! rounds stay in `tool_results`; the others are left out until they become relevant again. Jev
 //! only classifies relevance; DAGOS reads the turns and the model never has to ask.
 
@@ -19,13 +19,8 @@ use crate::store::{StoreError, Tx};
 /// A chunk at or above this relevance is recalled or kept.
 pub const RECALL_THRESHOLD: f64 = 0.5;
 
-/// The most turns one run recalls.
-pub const RECALL_MAX_TURNS: usize = 5;
-
-/// The most earlier turns Jev judges per run, newest first.
-pub const RECALL_SEARCH_TURNS: usize = 300;
-
-/// The longest text one chunk carries; longer turns and tool results are cut.
+/// The most text Jev reads of one turn or tool result when judging it (its own input limit). The
+/// model always gets a recalled turn whole.
 pub const RECALL_CHUNK_CHARS: usize = 4000;
 
 /// Tool results shorter than this always stay in IR: judging them costs more than it saves.
@@ -41,8 +36,17 @@ const TURN_EVENTS: &[&str] = &[
     "run.failed",
 ];
 
-/// The longest excerpt of one tool output inside a turn.
+/// The longest excerpt of one tool output in the copy of a turn Jev judges.
 const TOOL_OUTPUT_CHARS: usize = 500;
+
+/// An earlier turn that may be recalled: what the model would get, and what Jev judges.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecallCandidate {
+    /// The whole turn, as IR carries it when recalled.
+    pub turn: IrRecalledTurn,
+    /// A trimmed copy for Jev to judge.
+    pub chunk: RecallChunk,
+}
 
 /// One piece of history Jev judges: an earlier turn (`run_…`) or a tool result (`call_…`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,12 +63,12 @@ impl RecallChunk {
 
 /// The project's finished turns that `run_id`'s IR does not already carry: every chat's turns
 /// except this run and the `window` turns of its own chat that `recent_events` holds. Oldest
-/// first, at most [`RECALL_SEARCH_TURNS`].
+/// first, all of them.
 pub fn recall_candidates(
     tx: &Tx<'_>,
     run_id: &RunId,
     window: usize,
-) -> Result<Vec<IrRecalledTurn>, StoreError> {
+) -> Result<Vec<RecallCandidate>, StoreError> {
     let run = tx
         .run(run_id)?
         .ok_or_else(|| StoreError::NotFound { kind: "run", id: run_id.to_string() })?;
@@ -85,51 +89,36 @@ pub fn recall_candidates(
         .into_iter()
         .filter(|other| !in_ir.contains(&other.id) && other.status != RunStatus::Running)
         .collect();
-    let mut turns = Vec::new();
-    for turn in &runs[runs.len().saturating_sub(RECALL_SEARCH_TURNS)..] {
+    let mut candidates = Vec::with_capacity(runs.len());
+    for turn in &runs {
         let events: Vec<EventData> = tx
             .events_of_types(&turn.id, TURN_EVENTS)?
             .into_iter()
             .map(|event| event.data)
             .collect();
-        turns.push(IrRecalledTurn {
-            run_id: turn.id.clone(),
-            chat: titles.get(&turn.conversation_id).cloned().unwrap_or_default(),
-            text: turn_text(&events),
+        let chat = titles.get(&turn.conversation_id).cloned().unwrap_or_default();
+        let judged = cut(&turn_text(&events, Some(TOOL_OUTPUT_CHARS)), RECALL_CHUNK_CHARS);
+        candidates.push(RecallCandidate {
+            chunk: RecallChunk::new(turn.id.as_str(), format!("chat “{chat}”\n{judged}")),
+            turn: IrRecalledTurn { run_id: turn.id.clone(), chat, text: turn_text(&events, None) },
         });
     }
-    Ok(turns)
+    Ok(candidates)
 }
 
-/// A turn as Jev judges it: its chat and its text.
-pub fn turn_chunk(turn: &IrRecalledTurn) -> RecallChunk {
-    RecallChunk::new(turn.run_id.as_str(), format!("chat “{}”\n{}", turn.chat, turn.text))
-}
-
-/// The turns to recall: those at or above [`RECALL_THRESHOLD`], the [`RECALL_MAX_TURNS`] most
-/// relevant, oldest first.
-pub fn select_recalled(turns: Vec<IrRecalledTurn>, scores: &[f64]) -> Vec<IrRecalledTurn> {
-    let mut ranked: Vec<(usize, f64)> = scores
-        .iter()
-        .copied()
-        .enumerate()
-        .filter(|(_, score)| *score >= RECALL_THRESHOLD)
-        .collect();
-    ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(b.0.cmp(&a.0)));
-    ranked.truncate(RECALL_MAX_TURNS);
-    let mut chosen: Vec<usize> = ranked.into_iter().map(|(index, _)| index).collect();
-    chosen.sort_unstable();
-    turns
+/// The turns to recall: every one Jev judged at or above [`RECALL_THRESHOLD`], oldest first.
+pub fn select_recalled(candidates: Vec<RecallCandidate>, scores: &[f64]) -> Vec<IrRecalledTurn> {
+    candidates
         .into_iter()
-        .enumerate()
-        .filter(|(index, _)| chosen.binary_search(index).is_ok())
-        .map(|(_, turn)| turn)
+        .zip(scores)
+        .filter(|(_, score)| **score >= RECALL_THRESHOLD)
+        .map(|(candidate, _)| candidate.turn)
         .collect()
 }
 
-/// One turn as text: the user's message, its tool calls with an excerpt of each result, and the
-/// reply or failure. Cut at [`RECALL_CHUNK_CHARS`].
-fn turn_text(events: &[EventData]) -> String {
+/// One turn as text: the user's message, its tool calls and their results (each cut to `excerpt`
+/// characters, if given), and the reply or failure.
+fn turn_text(events: &[EventData], excerpt: Option<usize>) -> String {
     let mut lines = Vec::new();
     for event in events {
         match event {
@@ -139,7 +128,9 @@ fn turn_text(events: &[EventData]) -> String {
             }
             EventData::ToolCompleted { output, is_error, .. } => {
                 let label = if *is_error { "tool error" } else { "tool result" };
-                lines.push(format!("{label}: {}", cut(&output_text(output), TOOL_OUTPUT_CHARS)));
+                let text = output_text(output);
+                let text = excerpt.map_or(text.clone(), |limit| cut(&text, limit));
+                lines.push(format!("{label}: {text}"));
             }
             EventData::ResponseValidated { response } => {
                 lines.push(format!("assistant: {}", response.presentation.prose));
@@ -156,7 +147,7 @@ fn turn_text(events: &[EventData]) -> String {
             _ => {}
         }
     }
-    cut(&lines.join("\n"), RECALL_CHUNK_CHARS)
+    lines.join("\n")
 }
 
 /// `text` cut to at most `limit` characters, marked with `…` when cut.

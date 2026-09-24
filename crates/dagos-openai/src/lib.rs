@@ -375,12 +375,22 @@ impl JevClassifier for DecisionsJev {
         query: &str,
         chunks: &[RecallChunk],
     ) -> Result<Option<Vec<f64>>, JevError> {
-        let mut scores = Vec::with_capacity(chunks.len());
-        for batch in recall_batches(chunks) {
-            let response = self.decide_raw(recall_body(&self.model, query, batch)).await?;
-            scores.extend(relevance_from_decisions(batch, &response).map_err(JevError)?);
+        // Every batch is judged at once, so a long history costs no more time than a short one.
+        let mut asks = tokio::task::JoinSet::new();
+        for (index, batch) in recall_batches(chunks).into_iter().enumerate() {
+            let (jev, batch, query) = (self.clone(), batch.to_vec(), query.to_owned());
+            asks.spawn(async move {
+                let response = jev.decide_raw(recall_body(&jev.model, &query, &batch)).await?;
+                let scores = relevance_from_decisions(&batch, &response).map_err(JevError)?;
+                Ok::<_, JevError>((index, scores))
+            });
         }
-        Ok(Some(scores))
+        let mut batches = Vec::new();
+        while let Some(joined) = asks.join_next().await {
+            batches.push(joined.map_err(|error| JevError(error.to_string()))??);
+        }
+        batches.sort_by_key(|(index, _)| *index);
+        Ok(Some(batches.into_iter().flat_map(|(_, scores)| scores).collect()))
     }
 
     async fn decide(

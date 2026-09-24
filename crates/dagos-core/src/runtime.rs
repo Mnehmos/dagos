@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::context::recall::{
     COMPACT_MIN_CHARS, RECALL_CHUNK_CHARS, RECALL_THRESHOLD, RecallChunk, cut, output_text,
-    recall_candidates, select_recalled, turn_chunk,
+    recall_candidates, select_recalled,
 };
 use crate::context::{
     JevClassifier, apply_classification, carry_context, classification_request,
@@ -552,7 +552,7 @@ impl Runtime {
     }
 
     /// Asks Jev which of the project's earlier turns outside this run's recent window (any chat)
-    /// are relevant to `message`; the most relevant reach IR as `recalled`. Nothing is recalled
+    /// are relevant to `message`; every relevant one reaches IR, whole, as `recalled`. Nothing is recalled
     /// when Jev does not judge relevance or fails to.
     async fn recall_turns(
         &self,
@@ -560,13 +560,14 @@ impl Runtime {
         message: &str,
     ) -> Result<Vec<IrRecalledTurn>, StageFailure> {
         let window = self.conversation_window;
-        let turns = self.store.transaction(|tx| recall_candidates(tx, &run.id, window))?;
-        if turns.is_empty() {
+        let candidates = self.store.transaction(|tx| recall_candidates(tx, &run.id, window))?;
+        if candidates.is_empty() {
             return Ok(Vec::new());
         }
-        let chunks: Vec<RecallChunk> = turns.iter().map(turn_chunk).collect();
+        let chunks: Vec<RecallChunk> =
+            candidates.iter().map(|candidate| candidate.chunk.clone()).collect();
         match self.judge(message, &chunks).await {
-            Some(scores) => Ok(select_recalled(turns, &scores)),
+            Some(scores) => Ok(select_recalled(candidates, &scores)),
             None => Ok(Vec::new()),
         }
     }
