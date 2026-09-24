@@ -25,8 +25,8 @@ use crate::context::{
 use crate::domain::{Classification, JevToolCandidate};
 use crate::domain::{
     ContextClassification, ConversationId, ConversationTurn, Emission, EmissionRef, Endpoint,
-    ErrorCode, EventData, InferenceIr, IrRecalledTurn, IrReview, IrTool, JevRequest, NodeId,
-    NodeType, ProjectId, ProviderId, Run, RunConfig, RunId, ToolDecider,
+    ErrorCode, EventData, InferenceIr, IrFinding, IrRecalledTurn, IrReview, IrTool, JevRequest,
+    NodeId, NodeType, Payload, ProjectId, ProviderId, Run, RunConfig, RunId, ToolDecider,
 };
 use crate::ir::{CompileError, IrHistory, RECENT_RUN_OUTCOMES, compile_with};
 use crate::provider::{DeltaSink, InferenceProvider, InferenceRequest};
@@ -535,7 +535,12 @@ impl Runtime {
             )
         })?;
         let unchanged = state.fingerprint.as_deref() == Some(review.fingerprint.as_str());
-        if review.findings.is_empty() || unchanged || state.rounds >= self.max_review_rounds {
+        if review.findings.is_empty() {
+            return Ok(None);
+        }
+        if unchanged || state.rounds >= self.max_review_rounds {
+            // The run ends with these findings open: the project remembers them.
+            self.store.transaction(|tx| record_findings(tx, run, &review.findings))?;
             return Ok(None);
         }
         state.fingerprint = Some(review.fingerprint);
@@ -750,6 +755,56 @@ impl Runtime {
         })?;
         Ok(raw)
     }
+}
+
+/// Records findings a run ended with as durable `observation` nodes (payload `kind:
+/// "lint_finding"`), so later runs in any chat can draw on them through Jev's classification. A
+/// finding the project already has a node for (same rule, file, and function) is not recorded
+/// twice. Each node is announced with `dag.node_created`, like an emission.
+fn record_findings(tx: &Tx<'_>, run: &Run, findings: &[IrFinding]) -> Result<(), StoreError> {
+    let same = |payload: &Payload, finding: &IrFinding| {
+        payload.get("kind").and_then(|v| v.as_str()) == Some("lint_finding")
+            && payload.get("rule").and_then(|v| v.as_str()) == Some(finding.rule.as_str())
+            && payload.get("file").and_then(|v| v.as_str()) == Some(finding.file.as_str())
+            && payload.get("function").and_then(|v| v.as_str()) == Some(finding.function.as_str())
+    };
+    let existing: Vec<Payload> = tx
+        .nodes(&run.project_id)?
+        .into_iter()
+        .filter(|node| node.node_type == NodeType::Observation)
+        .map(|node| node.payload)
+        .collect();
+    for (index, finding) in findings.iter().enumerate() {
+        if existing.iter().any(|payload| same(payload, finding)) {
+            continue;
+        }
+        let serde_json::Value::Object(payload) = serde_json::json!({
+            "kind": "lint_finding",
+            "text": format!(
+                "Lint: {} `{}` ({}:{})",
+                finding.text, finding.function, finding.file, finding.line
+            ),
+            "rule": finding.rule,
+            "file": finding.file,
+            "function": finding.function,
+            "line": finding.line,
+            "probability": finding.probability,
+        }) else {
+            unreachable!("a JSON object literal")
+        };
+        let node = tx.insert_node(&run.project_id, NodeType::Observation, payload)?;
+        let reference = EmissionRef::parse(format!("review-finding-{}", index + 1))
+            .expect("review finding refs are valid");
+        tx.append_event(
+            &run.id,
+            EventData::DagNodeCreated {
+                node_id: node.id,
+                node_type: NodeType::Observation,
+                emission_ref: reference,
+            },
+        )?;
+    }
+    Ok(())
 }
 
 /// The reviews a run has had so far.

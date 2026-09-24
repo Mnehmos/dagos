@@ -179,3 +179,56 @@ async fn nothing_to_review_records_nothing_and_errors_do_not_fail_runs() {
     assert_eq!(reviews(&store, &run), [(1, 0, Some("Jev is unreachable".into()))]);
     assert_eq!(irs(&store, &run).len(), 1);
 }
+
+/// The lint-finding nodes in `run`'s project, as (rule, file, function).
+fn finding_nodes(store: &Store, run: &Run) -> Vec<(String, String, String)> {
+    let nodes = store.transaction(|tx| tx.nodes(&run.project_id)).unwrap();
+    nodes
+        .into_iter()
+        .filter(|node| node.payload.get("kind").and_then(|k| k.as_str()) == Some("lint_finding"))
+        .map(|node| {
+            let field = |key: &str| node.payload[key].as_str().unwrap().to_owned();
+            (field("rule"), field("file"), field("function"))
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn findings_left_open_become_project_nodes_once() {
+    // Clean at the end: nothing to remember.
+    let reviewer = Scripted::new(vec![review("v1", vec![finding("swallows-errors")])]);
+    let (store, run) = run_with(reviewer, "fake-tool").await;
+    assert!(finding_nodes(&store, &run).is_empty());
+
+    // Disputed (the code did not change): the open finding is remembered, once, as an observation.
+    let reviewer = Scripted::new(vec![
+        review("same", vec![finding("swallows-errors"), finding("dead-code")]),
+        review("same", vec![finding("swallows-errors"), finding("dead-code")]),
+    ]);
+    let (store, run) = run_with(reviewer, "fake-echo").await;
+    let nodes = finding_nodes(&store, &run);
+    assert_eq!(nodes.len(), 2, "{nodes:?}");
+    assert_eq!(nodes[0], ("swallows-errors".into(), "src/lib.rs".into(), "load".into()));
+    let events = store.transaction(|tx| tx.events(&run.id)).unwrap();
+    let created = events
+        .iter()
+        .filter(|event| match &event.data {
+            EventData::DagNodeCreated { emission_ref, .. } => {
+                emission_ref.as_str().starts_with("review-finding-")
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(created, 2, "each node is announced like an emission");
+
+    // Out of reviews: the last review's findings are remembered.
+    let reviewer = Scripted::new(vec![
+        review("v1", vec![finding("a")]),
+        review("v2", vec![finding("b")]),
+        review("v3", vec![finding("c")]),
+    ]);
+    let (store, run) = run_with(reviewer, "fake-echo").await;
+    let rules: Vec<String> =
+        finding_nodes(&store, &run).into_iter().map(|(rule, ..)| rule).collect();
+    assert_eq!(rules, ["c"]);
+}

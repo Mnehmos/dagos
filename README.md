@@ -139,6 +139,9 @@ functions in parallel.
   run, on/off) and live in `.dagos/lint.json` (without it, the defaults apply):
   `{"threshold": 0.7, "max_rounds": 3, "rules": [{"id": "swallows-errors", "text": "Swallows
   errors.", "applies": "…", "except": "…"}]}`. `"enabled": false` turns the loop off.
+- **Open findings are remembered.** When a run ends with findings still open (disputed, unchanged,
+  or out of reviews), each becomes an observation node in the project DAG, once, so later runs in
+  any chat can pick them up.
 - **The Lint view** (`l`, next to Chat and Inspect) judges the files changed since the last commit,
   or the files you name, and shows every judgment as a heatmap of functions × rules. Select a
   function to see its source and each rule's probability; mark a finding **Not a problem here** and

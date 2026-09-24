@@ -32,4 +32,6 @@ MCP is an optional capability boundary. A workspace may list stdio MCP servers i
 - Jev's probabilities are calibrated but not infallible: the guard produced a harmless false positive (`outside-project` on a path inside the project written with backslashes), and lint findings can be wrong. Findings are handed back for the model to fix or dispute, never applied automatically.
 - The review cache and the reviewer's per-run file memory are in-process; a restart loses them (a restarted run is failed as interrupted anyway).
 - Tool calls use DAGOS's JSON response protocol, not providers' native tool calling; that keeps providers interchangeable but costs robustness with models that add text around the document.
-- Lint findings are kept in events and recall, not yet as durable observation nodes.
+- Findings a run ends with become `observation` nodes (`kind: "lint_finding"`) that DAGOS records
+  itself, the one place durable state is written without a model emission. They are not removed
+  when the code is later fixed; Jev's classification keeps stale ones out of context.
