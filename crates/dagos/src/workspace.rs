@@ -60,6 +60,8 @@ pub struct Workspace {
     live: RwLock<Live>,
     edits: Mutex<()>,
     tool_edits: tokio::sync::Mutex<()>,
+    /// Whether MCP servers are starting (or restarting) right now.
+    tools_starting: tokio::sync::watch::Sender<bool>,
 }
 
 /// The running MCP servers and what they offer.
@@ -121,6 +123,9 @@ impl Workspace {
             live: RwLock::new(live),
             edits: Mutex::new(()),
             tool_edits: tokio::sync::Mutex::new(()),
+            // The app starts the servers in the background right after opening; until they are
+            // up, runs that could use them wait (see `wait_for_tools`).
+            tools_starting: tokio::sync::watch::Sender::new(dir.join(MCP_FILE).exists()),
         })
     }
 
@@ -183,7 +188,25 @@ impl Workspace {
     /// Starts the MCP servers named in `mcp.json` (stopping any this workspace ran before) and
     /// offers their tools to subsequent runs. Without the file runs simply have no tools; `warn`
     /// hears about each server that could not be used.
-    pub async fn start_tools(&self, mut warn: impl FnMut(String)) -> Result<(), String> {
+    /// Whether MCP servers are starting right now.
+    pub fn tools_starting(&self) -> bool {
+        *self.tools_starting.borrow()
+    }
+
+    /// Waits until the MCP servers are up (or failed), at most `limit`.
+    pub async fn wait_for_tools(&self, limit: Duration) {
+        let mut starting = self.tools_starting.subscribe();
+        let _ = tokio::time::timeout(limit, starting.wait_for(|starting| !*starting)).await;
+    }
+
+    pub async fn start_tools(&self, warn: impl FnMut(String)) -> Result<(), String> {
+        self.tools_starting.send_replace(true);
+        let outcome = self.start_tools_now(warn).await;
+        self.tools_starting.send_replace(false);
+        outcome
+    }
+
+    async fn start_tools_now(&self, mut warn: impl FnMut(String)) -> Result<(), String> {
         let state = match McpConfig::load(&self.dir.join(MCP_FILE))? {
             None => None,
             Some(config) => {
@@ -294,7 +317,8 @@ fn build(
     match LintConfig::load(&dir.join(LINT_FILE)) {
         Ok(lint) if lint.enabled => {
             let rounds = lint.max_rounds;
-            let reviewer = LintReviewer::new(&project_root(dir), loaded.jev.clone(), lint);
+            let reviewer = LintReviewer::new(&project_root(dir), loaded.jev.clone(), lint)
+                .with_cache_file(dir.join(dagos_lint::CACHE_FILE));
             runtime = runtime.with_reviewer(Arc::new(reviewer), rounds);
         }
         Ok(_) => {}

@@ -193,7 +193,10 @@ async fn lint(
     }
     let files = if files.is_empty() { workspace::changed_files(&root)? } else { files };
     let jev = workspace.runtime().shared_jev();
-    let report = dagos_lint::lint_files(&root, &files, jev, &config).await?;
+    let cache_file = dir.join(dagos_lint::CACHE_FILE);
+    let cache = dagos_lint::Cache::load(&cache_file);
+    let report = dagos_lint::lint_files(&root, &files, jev, &config, &cache).await?;
+    let _ = cache.save(&cache_file);
     if as_json {
         let judgments: Vec<_> = report
             .units

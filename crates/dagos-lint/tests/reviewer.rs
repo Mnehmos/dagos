@@ -155,3 +155,43 @@ async fn dismissed_findings_are_not_handed_back() {
     assert_eq!(review.judged, 1);
     assert!(review.findings.is_empty(), "a person said it is not a problem here");
 }
+
+#[tokio::test]
+async fn files_a_command_changed_without_naming_them_are_reviewed_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let judge = Arc::new(RuleJudge::default());
+    let reviewer = LintReviewer::new(dir.path(), judge.clone(), config());
+    let run = RunId::parse("run_000004").unwrap();
+    // A command that names no file (e.g. a generator script) still runs through a call.
+    reviewer.before_call(&run, &call(json!({"command": "python generate.py"}))).await;
+    std::fs::create_dir(dir.path().join("target")).unwrap();
+    std::fs::write(dir.path().join("target").join("built.rs"), "fn skip() {}\n").unwrap();
+    std::fs::write(dir.path().join("made.rs"), "fn made() {\n    load().ok();\n}\n").unwrap();
+    let review = reviewer.review(&run).await.unwrap();
+    assert_eq!(review.judged, 1, "made.rs counts; build folders are skipped");
+    assert_eq!(review.findings[0].function, "made");
+}
+
+#[tokio::test]
+async fn judged_answers_survive_a_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("lint-cache.json");
+    let lib = dir.path().join("lib.rs");
+    let run = RunId::parse("run_000005").unwrap();
+    for (attempt, expected_questions) in [(0, 1), (1, 1)] {
+        std::fs::write(&lib, "fn old() {}\n").unwrap();
+        let judge = Arc::new(RuleJudge::default());
+        let reviewer =
+            LintReviewer::new(dir.path(), judge.clone(), config()).with_cache_file(cache.clone());
+        reviewer.before_call(&run, &call(json!({"path": "lib.rs"}))).await;
+        std::fs::write(&lib, "fn changed() {\n    read().ok();\n}\n").unwrap();
+        reviewer.review(&run).await.unwrap();
+        let asked = judge.asked.lock().unwrap().len();
+        if attempt == 0 {
+            assert_eq!(asked, expected_questions, "first time: judged");
+        } else {
+            assert_eq!(asked, 0, "after a restart: answered from the saved cache");
+        }
+    }
+    assert!(cache.exists());
+}

@@ -29,9 +29,9 @@ MCP is an optional capability boundary. A workspace may list stdio MCP servers i
 - **Tolerating chat-model quirks without trusting them.** A whole-output code fence, or a short plain-text preamble before a response document that starts on its own line, is removed before validation; anything else still fails closed.
 
 ## Unresolved tradeoffs
-- The guard sees only what a call's arguments show: a shell command's own side effects are judged from its text, and files it changes without naming them are invisible to the review loop.
+- The guard sees only what a call's arguments show: a shell command's own side effects are judged from its text. Files a call changes without naming them reach the review loop only through their modification time, judged whole (without an earlier copy to compare), and a file someone else edits during the run is included too.
 - Jev's probabilities are calibrated but not infallible: the guard produced a harmless false positive (`outside-project` on a path inside the project written with backslashes), and lint findings can be wrong. Findings are handed back for the model to fix or dispute, never applied automatically.
-- The review cache and the reviewer's per-run file memory are in-process; a restart loses them (a restarted run is failed as interrupted anyway).
+- The review cache is saved in `.dagos/lint-cache.json`; the reviewer's per-run file memory is in-process (a restarted run is failed as interrupted anyway).
 - Tool calls go through providers' native tool calling where the model takes it (falling back to DAGOS's JSON protocol for a model that refuses, remembered per model). Final replies still use the JSON document, since emissions need it, so a model that adds text around its final document is still handled by the preamble rule.
 - Findings a run ends with become `observation` nodes (`kind: "lint_finding"`) that DAGOS records
   itself, the one place durable state is written without a model emission. They are not removed

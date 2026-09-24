@@ -244,7 +244,10 @@ fn state(
     let description: String = description.chars().take(800).collect();
     let mut state = json!({
         "request": message,
-        "project_folder": root.to_string_lossy(),
+        // Paths in arguments may use either separator (and Windows paths may carry a `\\?\`
+        // prefix); both forms name the same folder.
+        "project_folder": project_folder(root),
+        "project_folder_also_written_as": project_folder(root).replace('/', "\\"),
         "tool": request.name,
         "tool_description": description,
         "arguments": arguments,
@@ -253,6 +256,12 @@ fn state(
         state["arguments_part"] = json!(part);
     }
     state
+}
+
+/// The project folder with `/` separators and without Windows' verbatim `\\?\` prefix.
+fn project_folder(root: &std::path::Path) -> String {
+    let text = root.to_string_lossy().replace('\\', "/");
+    text.strip_prefix("//?/").map_or(text.clone(), str::to_owned)
 }
 
 fn lowercase_first(text: &str) -> String {
@@ -341,6 +350,13 @@ mod tests {
         let limit = WINDOW_OVERLAP + MAX_WINDOWS * (WINDOW_CHARS - WINDOW_OVERLAP);
         assert!(windows(&"z".repeat(limit)).is_some());
         assert!(windows(&"z".repeat(limit + 1)).is_none(), "too long to check: the call asks");
+    }
+
+    #[test]
+    fn the_project_folder_is_shown_without_verbatim_prefixes() {
+        let windows = std::path::Path::new(r"\\?\C:\Users\me\proj");
+        assert_eq!(project_folder(windows), "C:/Users/me/proj");
+        assert_eq!(project_folder(std::path::Path::new("/home/me/proj")), "/home/me/proj");
     }
 
     #[test]

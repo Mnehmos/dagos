@@ -57,7 +57,35 @@ impl Cache {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// The cache saved at `path`; empty if there is none or it cannot be read.
+    pub fn load(path: &std::path::Path) -> Self {
+        let answers = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<HashMap<String, f64>>(&text).ok())
+            .map(|saved| {
+                saved
+                    .into_iter()
+                    .filter_map(|(key, p)| Some((u64::from_str_radix(&key, 16).ok()?, p)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { answers: Mutex::new(answers) }
+    }
+
+    /// Saves the cache to `path`, keeping at most [`MAX_CACHED`] answers.
+    pub fn save(&self, path: &std::path::Path) -> Result<(), String> {
+        let answers = self.answers.lock().expect("cache lock");
+        let saved: HashMap<String, f64> =
+            answers.iter().take(MAX_CACHED).map(|(key, p)| (format!("{key:016x}"), *p)).collect();
+        let text = serde_json::to_string(&saved).expect("the cache serializes");
+        std::fs::write(path, text)
+            .map_err(|error| format!("cannot save {}: {error}", path.display()))
+    }
 }
+
+/// The most answers the saved cache keeps.
+pub const MAX_CACHED: usize = 50_000;
 
 /// Every (unit, rule) probability, in unit order then rule order.
 pub type Judgments = Vec<Vec<f64>>;

@@ -180,3 +180,29 @@ async fn denied_and_disabled_tools_never_run() {
     let (status, _) = api.call(Method::PUT, "/api/tools/servers/bad%20id", Some(bad)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn runs_can_wait_while_tool_servers_start() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join(".dagos");
+    workspace::init(&dir, Some("demo")).unwrap();
+    let config = json!({"servers": [{"id": "files", "command": fixture(), "args": ["files"], "policy": "allow"}]});
+    std::fs::write(dir.join("mcp.json"), config.to_string()).unwrap();
+    let workspace = Workspace::open(&dir, None, Duration::from_secs(10)).unwrap();
+    assert!(workspace.tools_starting(), "servers are configured and not started yet");
+    assert!(workspace.runtime().tools().is_empty());
+
+    let workspace = Arc::new(workspace);
+    let starter = workspace.clone();
+    let started = tokio::spawn(async move { starter.start_tools(|_| {}).await });
+    workspace.wait_for_tools(Duration::from_secs(30)).await;
+    assert!(!workspace.tools_starting());
+    assert!(!workspace.runtime().tools().is_empty(), "the runtime now has the tools");
+    started.await.unwrap().unwrap();
+
+    let plain = tempfile::tempdir().unwrap();
+    let plain_dir = plain.path().join(".dagos");
+    workspace::init(&plain_dir, Some("plain")).unwrap();
+    let without = Workspace::open(&plain_dir, None, Duration::from_secs(10)).unwrap();
+    assert!(!without.tools_starting(), "no servers configured: nothing to wait for");
+}

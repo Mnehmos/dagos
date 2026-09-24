@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use axum::Router;
 use axum::body::Body;
@@ -19,7 +20,9 @@ use axum::middleware::{self, Next};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, patch, post, put};
-use dagos_core::domain::{ConversationId, Event, ModelId, ProjectId, ProviderId, RunConfig, RunId};
+use dagos_core::domain::{
+    ConversationId, ErrorCode, Event, ModelId, ProjectId, ProviderId, RunConfig, RunId,
+};
 use dagos_core::runtime::{Runtime, RuntimeError, Thread};
 use dagos_core::store::{EventListener, StoreError};
 use dagos_mcp::{McpServer, Policy};
@@ -74,6 +77,8 @@ struct AppState {
     /// Runs this process is executing right now, with the runtime executing each (a reload may
     /// have replaced the workspace's runtime since); a `running` run outside this map is stale.
     executing: Mutex<BTreeMap<RunId, Arc<Runtime>>>,
+    /// Runs a person asked to stop, for runs not yet in a runtime's hands (waiting for tools).
+    stop_requests: Mutex<BTreeSet<RunId>>,
     loopback_only: bool,
 }
 
@@ -135,8 +140,13 @@ pub async fn serve(
             "DAGOS serves only on a loopback address (127.0.0.1 or ::1): the app can run commands              on this computer and has no sign-in. To reach it from elsewhere, use an SSH tunnel              or a reverse proxy that authenticates.",
         ));
     }
-    let state =
-        Arc::new(AppState { workspace, hub, executing: Mutex::default(), loopback_only: true });
+    let state = Arc::new(AppState {
+        workspace,
+        hub,
+        executing: Mutex::default(),
+        stop_requests: Mutex::default(),
+        loopback_only: true,
+    });
     axum::serve(listener, router(state)).await
 }
 
@@ -318,13 +328,34 @@ async fn start_run(
     let task_state = state.clone();
     tokio::spawn(async move {
         let id = started.run.id.clone();
-        // The outcome is recorded on the run and its events; a store failure leaves the run
-        // `running`, where recovery will find it.
-        let _ = runtime.finish(started).await;
+        let mut runtime = runtime;
+        // A run started while MCP servers are still starting waits for them, then runs with the
+        // runtime that has their tools.
+        let workspace = &task_state.workspace;
+        if workspace.tools_starting() {
+            workspace.wait_for_tools(TOOLS_WAIT).await;
+            runtime = workspace.runtime();
+            task_state.executing().insert(id.clone(), runtime.clone());
+        }
+        let stopped =
+            task_state.stop_requests.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
+        if stopped {
+            let message = "stopped by the person";
+            let _ =
+                workspace.store.transaction(|tx| tx.fail_run(&id, ErrorCode::Cancelled, message));
+        } else {
+            // The outcome is recorded on the run and its events; a store failure leaves the run
+            // `running`, where recovery will find it.
+            let _ = runtime.finish(started).await;
+        }
         task_state.executing().remove(&id);
+        task_state.stop_requests.lock().unwrap_or_else(PoisonError::into_inner).remove(&id);
     });
     Ok((StatusCode::ACCEPTED, Json(json!({"run": run}))))
 }
+
+/// How long a run started while MCP servers are starting waits for them.
+const TOOLS_WAIT: Duration = Duration::from_secs(45);
 
 /// `PUT /api/config`: the provider, model, and system prompt for subsequent runs.
 #[derive(Deserialize)]
@@ -679,10 +710,13 @@ async fn stop_run(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let run = RunId::parse(run).map_err(ApiError::bad_request)?;
     let runtime = state.executing().get(&run).cloned();
-    match runtime {
-        Some(runtime) if runtime.stop(&run) => Ok(Json(json!({"stopping": run}))),
-        _ => Err(ApiError::Conflict(format!("run `{run}` is not executing in this app"))),
-    }
+    let Some(runtime) = runtime else {
+        return Err(ApiError::Conflict(format!("run `{run}` is not executing in this app")));
+    };
+    // Recorded first, for a run still waiting for tools; then the runtime executing it stops it.
+    state.stop_requests.lock().unwrap_or_else(PoisonError::into_inner).insert(run.clone());
+    runtime.stop(&run);
+    Ok(Json(json!({"stopping": run})))
 }
 
 /// `POST /api/runs/{run}/tools/{call}`: a person's answer to a call waiting for approval.
@@ -799,8 +833,12 @@ async fn run_lint(
         request.files
     };
     let jev = workspace.runtime().shared_jev();
-    let report =
-        dagos_lint::lint_files(&root, &files, jev, &config).await.map_err(ApiError::BadRequest)?;
+    let cache_file = workspace.dir().join(dagos_lint::CACHE_FILE);
+    let cache = dagos_lint::Cache::load(&cache_file);
+    let report = dagos_lint::lint_files(&root, &files, jev, &config, &cache)
+        .await
+        .map_err(ApiError::BadRequest)?;
+    let _ = cache.save(&cache_file);
     let functions: Vec<_> = report
         .units
         .iter()

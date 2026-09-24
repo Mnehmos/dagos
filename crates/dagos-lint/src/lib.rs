@@ -29,6 +29,10 @@ pub use rules::{Dismissal, LintConfig, Rule, default_rules};
 /// The linter's configuration file inside the DAGOS directory.
 pub const LINT_FILE: &str = "lint.json";
 
+/// The saved judgments inside the DAGOS directory, so unchanged functions are never judged twice,
+/// across restarts too.
+pub const CACHE_FILE: &str = "lint-cache.json";
+
 /// What linting some files found.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Report {
@@ -47,6 +51,7 @@ pub async fn lint_files(
     files: &[String],
     jev: Arc<dyn JevClassifier>,
     config: &LintConfig,
+    cache: &Cache,
 ) -> Result<Report, String> {
     let mut units = Vec::new();
     for file in files {
@@ -58,9 +63,8 @@ pub async fn lint_files(
             units.push(Unit { file: file.replace('\\', "/"), language, function });
         }
     }
-    let judgments = judge::judge(jev, &Cache::default(), &config.rules, &units)
-        .await
-        .map_err(|error| error.to_string())?;
+    let judgments =
+        judge::judge(jev, cache, &config.rules, &units).await.map_err(|error| error.to_string())?;
     let findings = judge::findings(&config.rules, &units, &judgments, config.threshold)
         .into_iter()
         .filter(|f| !config.is_dismissed(&f.rule, &f.file, &f.function))

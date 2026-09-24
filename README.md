@@ -149,7 +149,9 @@ functions in parallel.
 - **CI:** `dagos lint [files]` judges every function in the files (default: files changed since the
   last commit) and exits 1 when a rule applies; `--json` prints every judgment.
 - Rust, JavaScript, TypeScript, and Python are read. Without a Jev that answers yes/no questions,
-  nothing is reviewed. Edits a shell command makes to files it does not name are not seen.
+  nothing is reviewed. Code files a run's calls change without naming them (e.g. a generator a
+  shell command runs) are found by modification time and judged whole. Answers are cached in
+  `.dagos/lint-cache.json`, so unchanged functions are never judged twice, across restarts too.
 
 ### Tools: MCP servers (optional)
 

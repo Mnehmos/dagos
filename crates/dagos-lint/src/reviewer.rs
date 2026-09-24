@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 use dagos_core::context::JevClassifier;
@@ -33,16 +34,97 @@ pub struct LintReviewer {
     jev: Arc<dyn JevClassifier>,
     config: LintConfig,
     cache: Cache,
-    /// Per run: each touched file and its content before the run first touched it (`None` if it
-    /// did not exist).
-    before: Mutex<HashMap<RunId, BTreeMap<PathBuf, Option<String>>>>,
+    /// Per run: when its first call ran, and each touched file with its content before the run
+    /// first touched it (`None` if it did not exist).
+    before: Mutex<HashMap<RunId, Touched>>,
+    /// Where the judged answers are saved between restarts, if anywhere.
+    cache_file: Option<PathBuf>,
 }
+
+/// What a run's calls may have changed.
+#[derive(Debug, Clone)]
+struct Touched {
+    since: SystemTime,
+    files: BTreeMap<PathBuf, Option<String>>,
+}
+
+/// Directories never scanned for files a run changed without naming them.
+const SKIPPED_DIRS: &[&str] = &[
+    ".git",
+    ".dagos",
+    "target",
+    "node_modules",
+    "dist",
+    "build",
+    "out",
+    ".next",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".idea",
+    ".vscode",
+];
+
+/// When a run's first call is about to run, a little early: file systems stamp modification
+/// times with a coarser clock than [`SystemTime::now`], so a file written right after could
+/// otherwise look older than the run.
+fn run_start() -> SystemTime {
+    SystemTime::now() - std::time::Duration::from_secs(2)
+}
+
+/// The most files one scan looks at.
+const MAX_SCANNED: usize = 20_000;
 
 impl LintReviewer {
     /// A reviewer for the project in `root`.
     pub fn new(root: &Path, jev: Arc<dyn JevClassifier>, config: LintConfig) -> Self {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-        Self { root, jev, config, cache: Cache::default(), before: Mutex::default() }
+        Self {
+            root,
+            jev,
+            config,
+            cache: Cache::default(),
+            before: Mutex::default(),
+            cache_file: None,
+        }
+    }
+
+    /// Keeps judged answers in `path` across restarts: loads them now and saves after reviews.
+    pub fn with_cache_file(mut self, path: PathBuf) -> Self {
+        self.cache = Cache::load(&path);
+        self.cache_file = Some(path);
+        self
+    }
+
+    /// Code files under the root modified at or after `since` (skipping build and tool folders),
+    /// for edits a call made without naming the file, such as a shell command's.
+    fn modified_since(&self, since: SystemTime) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut pending = vec![self.root.clone()];
+        let mut seen = 0;
+        while let Some(dir) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                seen += 1;
+                if seen > MAX_SCANNED {
+                    return found;
+                }
+                let path = entry.path();
+                let Ok(kind) = entry.file_type() else { continue };
+                if kind.is_dir() {
+                    let name = entry.file_name();
+                    if !SKIPPED_DIRS.iter().any(|skip| name == *skip) {
+                        pending.push(path);
+                    }
+                } else if kind.is_file()
+                    && Language::of(&path).is_some()
+                    && entry.metadata().and_then(|m| m.modified()).is_ok_and(|m| m >= since)
+                {
+                    found.push(path);
+                }
+            }
+        }
+        found
     }
 
     pub fn config(&self) -> &LintConfig {
@@ -117,16 +199,26 @@ impl Reviewer for LintReviewer {
     async fn before_call(&self, run_id: &RunId, request: &ToolRequest) {
         let files = self.named_files(&request.arguments);
         let mut before = self.before.lock().expect("reviewer lock");
-        let touched = before.entry(run_id.clone()).or_default();
+        let touched = before
+            .entry(run_id.clone())
+            .or_insert_with(|| Touched { since: run_start(), files: BTreeMap::new() });
         for file in files {
-            touched.entry(file.clone()).or_insert_with(|| std::fs::read_to_string(&file).ok());
+            touched
+                .files
+                .entry(file.clone())
+                .or_insert_with(|| std::fs::read_to_string(&file).ok());
         }
     }
 
     async fn review(&self, run_id: &RunId) -> Result<Review, String> {
         let touched = self.before.lock().expect("reviewer lock").get(run_id).cloned();
-        let Some(touched) = touched else { return Ok(Review::default()) };
-        let units = self.changed_units(&touched);
+        let Some(Touched { since, mut files }) = touched else { return Ok(Review::default()) };
+        // Files the run's calls changed without naming them (e.g. a shell command's edits) have
+        // no earlier copy: all of their functions count as changed.
+        for path in self.modified_since(since) {
+            files.entry(path).or_insert(None);
+        }
+        let units = self.changed_units(&files);
         if units.is_empty() {
             return Ok(Review::default());
         }
@@ -137,6 +229,10 @@ impl Reviewer for LintReviewer {
             Err(JudgeError::Unsupported) => return Ok(Review::default()),
             Err(error) => return Err(error.to_string()),
         };
+        if let Some(path) = &self.cache_file {
+            // A cache that cannot be saved only costs judging again.
+            let _ = self.cache.save(path);
+        }
         let mut found: Vec<_> =
             findings(&self.config.rules, &units, &judgments, self.config.threshold)
                 .into_iter()
