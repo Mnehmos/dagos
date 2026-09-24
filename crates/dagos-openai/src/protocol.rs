@@ -376,9 +376,10 @@ const MAX_PREAMBLE_CHARS: usize = 1_000;
 /// The response document inside a model's final output, for two harmless quirks of chat models:
 /// the whole document wrapped in a Markdown code fence, or a short plain-text preamble (a note on
 /// what the model is about to do, usually a paraphrase of its own `presentation.prose`) before
-/// the object. The document must be everything after the preamble and the preamble must hold no
-/// JSON, so only presentation text is dropped. Any other output is returned unchanged, so
-/// validation still fails closed on it.
+/// the object. The document must start on its own line and run to the end, and the preamble may
+/// mention braces in prose (e.g. "returns `{}` on errors") but hold no JSON object (`{"`), so
+/// only presentation text is dropped, never another document. Any other output is returned
+/// unchanged, so validation still fails closed on it.
 pub fn unwrap_document(output: &str) -> String {
     let trimmed = output.trim();
     if let Some(inner) = strip_fence(trimmed)
@@ -392,7 +393,8 @@ pub fn unwrap_document(output: &str) -> String {
         return output.to_owned();
     };
     let preamble = &trimmed[..start];
-    if trimmed.starts_with('{') || preamble.chars().count() > MAX_PREAMBLE_CHARS {
+    let holds_json = preamble.contains("{\"") || preamble.contains("{ \"");
+    if trimmed.starts_with('{') || holds_json || preamble.chars().count() > MAX_PREAMBLE_CHARS {
         return output.to_owned();
     }
     let document = &trimmed[start..];
@@ -437,6 +439,8 @@ mod tests {
 
     #[test]
     fn anything_else_is_left_for_validation_to_reject() {
+        let inline = format!("Plan: {DOCUMENT}\n{DOCUMENT}");
+        assert_eq!(unwrap_document(&inline), inline, "a document in the preamble is never dropped");
         let json_before = format!("{{\"a\": 1}} and then\n{DOCUMENT}");
         assert_eq!(unwrap_document(&json_before), json_before, "a preamble holding JSON is kept");
         let long = format!("{}\n{DOCUMENT}", "word ".repeat(300));

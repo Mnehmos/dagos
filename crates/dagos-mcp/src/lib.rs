@@ -282,16 +282,38 @@ impl McpPool {
     }
 
     /// The running session with `server`, started (or restarted) if needed.
+    ///
+    /// The pool-wide lock is held only for map lookups, never while a session is busy or starting,
+    /// so a slow call or start on one server never blocks the others.
     async fn session(&self, server: &McpServer) -> Result<Arc<Mutex<Session>>, McpError> {
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get(&server.id)
-            && session.lock().await.is_running()
-        {
-            return Ok(session.clone());
+        if let Some(session) = self.live_session(&server.id).await {
+            return Ok(session);
         }
-        let session = Arc::new(Mutex::new(Session::start(server, self.start_timeout).await?));
-        sessions.insert(server.id.clone(), session.clone());
-        Ok(session)
+        let started = Arc::new(Mutex::new(Session::start(server, self.start_timeout).await?));
+        let mut sessions = self.sessions.lock().await;
+        if let Some(existing) = sessions.get(&server.id)
+            && is_live(existing)
+        {
+            // Another caller started one meanwhile; ours is dropped, which stops its process.
+            return Ok(existing.clone());
+        }
+        sessions.insert(server.id.clone(), started.clone());
+        Ok(started)
+    }
+
+    /// The session with server `id`, if it is running.
+    async fn live_session(&self, id: &str) -> Option<Arc<Mutex<Session>>> {
+        let sessions = self.sessions.lock().await;
+        sessions.get(id).filter(|session| is_live(session)).cloned()
+    }
+}
+
+/// Whether a session is running. A session busy with a call is locked, and counts as running:
+/// waiting for it happens outside the pool lock.
+fn is_live(session: &Mutex<Session>) -> bool {
+    match session.try_lock() {
+        Ok(mut session) => session.is_running(),
+        Err(_busy) => true,
     }
 }
 

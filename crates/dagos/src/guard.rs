@@ -22,8 +22,16 @@ pub const RISK_THRESHOLD: f64 = 0.5;
 /// How long the guard may take; a call it could not check in time asks the person.
 pub const GUARD_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// The longest argument JSON Jev is shown.
-const MAX_ARGUMENT_CHARS: usize = 6000;
+/// The most argument JSON Jev is shown at once; longer arguments are judged in overlapping
+/// windows, and a risk counts when any window shows it.
+const WINDOW_CHARS: usize = 6000;
+
+/// How far consecutive windows overlap, so a command split by a window edge is seen whole.
+const WINDOW_OVERLAP: usize = 500;
+
+/// The most windows one call is judged in; arguments longer than that cannot be checked, and the
+/// call asks the person.
+const MAX_WINDOWS: usize = 8;
 
 /// The risks the guard asks about: ID, what a yes means, and whether the user's request can
 /// excuse it. Deleting data, touching secrets, and delegating to unseen tools always need a
@@ -141,7 +149,13 @@ impl Guard {
                 })
             })
             .unwrap_or_default();
-        let state = state(&message, &self.root, request, description);
+        let arguments = Value::Object(request.arguments.clone()).to_string();
+        let Some(windows) = windows(&arguments) else {
+            let size = arguments.chars().count();
+            return Assessment::Failed(format!(
+                "its arguments are too long to check ({size} characters)"
+            ));
+        };
         let questions: Vec<NoulQuestion> = RISKS
             .iter()
             .map(|(id, meaning, excusable)| NoulQuestion {
@@ -161,44 +175,85 @@ impl Guard {
                 },
             })
             .collect();
-        let answer = tokio::time::timeout(GUARD_TIMEOUT, self.jev.decide(&state, &questions)).await;
-        match answer {
-            Err(_elapsed) => Assessment::Failed(format!("no answer within {GUARD_TIMEOUT:?}")),
-            Ok(Err(error)) => Assessment::Failed(error.to_string()),
-            Ok(Ok(None)) => Assessment::Unchecked,
-            Ok(Ok(Some(scores))) if scores.len() != RISKS.len() => {
-                Assessment::Failed("wrong number of answers".into())
+        let mut highest = vec![0.0_f64; RISKS.len()];
+        let count = windows.len();
+        for (index, window) in windows.into_iter().enumerate() {
+            let part = (count > 1).then(|| format!("part {} of {count}", index + 1));
+            let state = state(&message, &self.root, request, description, window, part);
+            let answer =
+                tokio::time::timeout(GUARD_TIMEOUT, self.jev.decide(&state, &questions)).await;
+            let scores = match answer {
+                Err(_elapsed) => {
+                    return Assessment::Failed(format!("no answer within {GUARD_TIMEOUT:?}"));
+                }
+                Ok(Err(error)) => return Assessment::Failed(error.to_string()),
+                Ok(Ok(None)) => return Assessment::Unchecked,
+                Ok(Ok(Some(scores))) if scores.len() != RISKS.len() => {
+                    return Assessment::Failed("wrong number of answers".into());
+                }
+                Ok(Ok(Some(scores))) => scores,
+            };
+            for (high, score) in highest.iter_mut().zip(scores) {
+                *high = high.max(score);
             }
-            Ok(Ok(Some(scores))) => Assessment::Risks(
-                RISKS
-                    .iter()
-                    .zip(scores)
-                    .filter(|(_, probability)| *probability >= RISK_THRESHOLD)
-                    .map(|((id, _, _), probability)| Risk {
-                        id,
-                        probability: (probability * 100.0).round() / 100.0,
-                    })
-                    .collect(),
-            ),
         }
+        Assessment::Risks(
+            RISKS
+                .iter()
+                .zip(highest)
+                .filter(|(_, probability)| *probability >= RISK_THRESHOLD)
+                .map(|((id, _, _), probability)| Risk {
+                    id,
+                    probability: (probability * 100.0).round() / 100.0,
+                })
+                .collect(),
+        )
     }
 }
 
-/// The Decisions state for one call.
-fn state(message: &str, root: &std::path::Path, request: &ToolRequest, description: &str) -> Value {
-    let arguments = Value::Object(request.arguments.clone()).to_string();
-    let arguments = match arguments.char_indices().nth(MAX_ARGUMENT_CHARS) {
-        Some((end, _)) => format!("{}… (cut)", &arguments[..end]),
-        None => arguments,
-    };
+/// `arguments` in overlapping windows of at most [`WINDOW_CHARS`] characters, or `None` when it
+/// would take more than [`MAX_WINDOWS`].
+fn windows(arguments: &str) -> Option<Vec<String>> {
+    let chars: Vec<char> = arguments.chars().collect();
+    if chars.len() <= WINDOW_CHARS {
+        return Some(vec![arguments.to_owned()]);
+    }
+    let step = WINDOW_CHARS - WINDOW_OVERLAP;
+    let count = (chars.len() - WINDOW_OVERLAP).div_ceil(step);
+    if count > MAX_WINDOWS {
+        return None;
+    }
+    Some(
+        (0..count)
+            .map(|index| {
+                let start = index * step;
+                chars[start..(start + WINDOW_CHARS).min(chars.len())].iter().collect()
+            })
+            .collect(),
+    )
+}
+
+/// The Decisions state for one window of a call's arguments.
+fn state(
+    message: &str,
+    root: &std::path::Path,
+    request: &ToolRequest,
+    description: &str,
+    arguments: String,
+    part: Option<String>,
+) -> Value {
     let description: String = description.chars().take(800).collect();
-    json!({
+    let mut state = json!({
         "request": message,
         "project_folder": root.to_string_lossy(),
         "tool": request.name,
         "tool_description": description,
         "arguments": arguments,
-    })
+    });
+    if let Some(part) = part {
+        state["arguments_part"] = json!(part);
+    }
+    state
 }
 
 fn lowercase_first(text: &str) -> String {
@@ -270,6 +325,23 @@ mod tests {
         assert_eq!(named_tools(&prose, tools), ["ooda.exec_cli"]);
         let plain = request("ooda.exec_cli", json!({"command": "cargo test"}));
         assert!(named_tools(&plain, tools).is_empty(), "a tool does not name itself");
+    }
+
+    #[test]
+    fn long_arguments_are_judged_in_overlapping_windows_up_to_a_limit() {
+        assert_eq!(windows("short").unwrap(), ["short"]);
+        let exact = "x".repeat(WINDOW_CHARS);
+        assert_eq!(windows(&exact).unwrap().len(), 1);
+        let tail = format!("{}rm -rf ~", "p".repeat(WINDOW_CHARS));
+        let parts = windows(&tail).unwrap();
+        assert_eq!(parts.len(), 2);
+        assert!(parts[1].ends_with("rm -rf ~"), "the end of the arguments is judged too");
+        assert!(parts.iter().all(|part| part.chars().count() <= WINDOW_CHARS));
+        let straddle = windows(&"y".repeat(2 * WINDOW_CHARS)).unwrap();
+        assert!(straddle.len() >= 2);
+        let limit = WINDOW_OVERLAP + MAX_WINDOWS * (WINDOW_CHARS - WINDOW_OVERLAP);
+        assert!(windows(&"z".repeat(limit)).is_some());
+        assert!(windows(&"z".repeat(limit + 1)).is_none(), "too long to check: the call asks");
     }
 
     #[test]

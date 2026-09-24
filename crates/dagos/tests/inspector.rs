@@ -137,3 +137,14 @@ async fn the_http_api_serves_the_same_views_on_loopback() {
     assert_eq!(status, 404);
     assert!(missing["error"].as_str().unwrap().contains("run_nope"));
 }
+
+#[tokio::test]
+async fn the_app_refuses_to_listen_beyond_loopback() {
+    let (_dir, workspace) = workspace_with_history().await;
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap();
+    let error = server::serve(listener, Arc::new(workspace), server::EventHub::new())
+        .await
+        .expect_err("a non-loopback address is refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains("loopback"), "{error}");
+}

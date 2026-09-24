@@ -556,7 +556,9 @@ impl Runtime {
         latest_step: &str,
         latest_round: &BTreeSet<String>,
     ) -> Result<BTreeSet<String>, StageFailure> {
-        let events = self.store.transaction(|tx| tx.events(&run.id))?;
+        let events = self
+            .store
+            .transaction(|tx| tx.events_of_types(&run.id, &["tool.requested", "tool.completed"]))?;
         let mut requests = BTreeMap::new();
         let mut chunks = Vec::new();
         for event in events {

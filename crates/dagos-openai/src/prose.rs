@@ -9,6 +9,9 @@
 #[derive(Debug, Default)]
 pub struct ProseExtractor {
     started: bool,
+    /// Before the document: whether the current line has had anything but whitespace. The
+    /// document starts at a `{` that begins a line, as [`crate::unwrap_document`] expects.
+    mid_line: bool,
     finished: bool,
     stack: Vec<Frame>,
     string: Option<Text>,
@@ -56,10 +59,16 @@ impl ProseExtractor {
             return;
         }
         if !self.started {
-            // Anything before the document's opening brace is not part of the document.
-            if c == '{' {
-                self.started = true;
-                self.stack.push(Frame::Object { key: None, expecting_key: true });
+            // Text before the document (a short preamble, which may mention braces) is not part
+            // of it: the document starts at a `{` that begins a line.
+            match c {
+                '{' if !self.mid_line => {
+                    self.started = true;
+                    self.stack.push(Frame::Object { key: None, expecting_key: true });
+                }
+                '\n' => self.mid_line = false,
+                c if c.is_whitespace() => {}
+                _ => self.mid_line = true,
             }
             return;
         }
@@ -183,6 +192,18 @@ mod tests {
             .chunks(chunk_chars)
             .map(|chunk| extractor.push(&chunk.iter().collect::<String>()))
             .collect()
+    }
+
+    #[test]
+    fn a_preamble_that_mentions_braces_does_not_start_the_document() {
+        let output = "I'll write a loader that returns `{}` on errors.\n\n{\"schema\":\"kiss.inference-response.v1\",\"presentation\":{\"prose\":\"Writing it.\"},\"emissions\":[]}";
+        for size in [1, 3, 7, 64] {
+            assert_eq!(extract_in_chunks(output, size), "Writing it.", "chunks of {size}");
+        }
+        let unmatched = "Note: { is a brace.\n{\"presentation\":{\"prose\":\"Hi\"}}";
+        assert_eq!(extract_in_chunks(unmatched, 5), "Hi");
+        let indented = "  {\"presentation\":{\"prose\":\"Indented\"}}";
+        assert_eq!(extract_in_chunks(indented, 4), "Indented", "leading spaces still begin a line");
     }
 
     #[test]

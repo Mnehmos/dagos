@@ -77,7 +77,8 @@ enum Command {
     },
     /// Serve the inspection API on a local port.
     Serve {
-        /// Address to bind; loopback by default so the workspace stays local.
+        /// Address to bind: a loopback address, since the app runs tools on this computer and has
+        /// no sign-in.
         #[arg(long, default_value = "127.0.0.1:7420")]
         address: String,
     },

@@ -284,3 +284,28 @@ fn a_crashed_run_is_found_after_restart_and_can_be_failed_explicitly() {
     assert_eq!(failed.error_code, Some(ErrorCode::Interrupted));
     assert!(reopened.transaction(|tx| tx.running_runs()).unwrap().is_empty());
 }
+
+#[test]
+fn events_can_be_read_by_type_without_the_rest() {
+    let store = memory_store();
+    let project = store.transaction(|tx| tx.create_project("demo")).unwrap().id;
+    let config = dagos_core::domain::RunConfig {
+        provider_id: dagos_core::domain::ProviderId::parse("fake").unwrap(),
+        model_id: dagos_core::domain::ModelId::parse("fake-echo").unwrap(),
+        system_prompt: String::new(),
+    };
+    let run = store.transaction(|tx| tx.create_run(&project, &config)).unwrap();
+    store
+        .transaction(|tx| {
+            tx.append_event(&run.id, EventData::InferenceDelta { text: "a".into() })?;
+            tx.append_event(&run.id, EventData::ResponseRejected { reason: "no".into() })?;
+            tx.append_event(&run.id, EventData::InferenceDelta { text: "b".into() })
+        })
+        .unwrap();
+    let picked = store
+        .transaction(|tx| tx.events_of_types(&run.id, &["run.started", "response.rejected"]))
+        .unwrap();
+    let kinds: Vec<String> = picked.iter().map(|event| event.data.event_type()).collect();
+    assert_eq!(kinds, ["run.started", "response.rejected"], "in sequence order, deltas skipped");
+    assert!(store.transaction(|tx| tx.events_of_types(&run.id, &[])).unwrap().is_empty());
+}

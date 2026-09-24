@@ -59,6 +59,7 @@ pub struct Workspace {
     approvals: Arc<Approvals>,
     live: RwLock<Live>,
     edits: Mutex<()>,
+    tool_edits: tokio::sync::Mutex<()>,
 }
 
 /// The running MCP servers and what they offer.
@@ -119,6 +120,7 @@ impl Workspace {
             approvals: Arc::new(Approvals::new(APPROVAL_TIMEOUT)),
             live: RwLock::new(live),
             edits: Mutex::new(()),
+            tool_edits: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -147,6 +149,12 @@ impl Workspace {
         self.keys.as_ref()
     }
 
+    /// Serializes edits of `mcp.json`, which may await restarting the servers; hold it from
+    /// loading the configuration to saving it.
+    pub async fn tool_edit_lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.tool_edits.lock().await
+    }
+
     /// Serializes configuration edits; hold it across an edit and the [`Workspace::reload`].
     pub fn edit_lock(&self) -> MutexGuard<'_, ()> {
         self.edits.lock().unwrap_or_else(PoisonError::into_inner)
@@ -159,7 +167,7 @@ impl Workspace {
             let mcp = self.mcp.read().unwrap_or_else(PoisonError::into_inner);
             mcp.as_ref().map(|state| {
                 let runner: ToolRunner = (state.pool.clone(), self.approvals.clone());
-                self.approvals.set_tools(&state.capabilities.tools);
+                self.approvals.set_tools(&state.capabilities);
                 (state.capabilities.tools.clone(), runner)
             })
         };

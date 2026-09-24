@@ -18,9 +18,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-use dagos_core::domain::{IrTool, RunId, ToolDecider};
+use dagos_core::domain::{RunId, ToolDecider};
 use dagos_core::tools::{ToolDecision, ToolGate, ToolRequest};
-use dagos_mcp::{McpConfig, Policy};
+use dagos_mcp::{Capabilities, McpConfig, Policy};
 use tokio::sync::oneshot;
 
 use crate::guard::{Assessment, Guard, named_tools};
@@ -41,8 +41,8 @@ pub struct Approvals {
     tools: RwLock<BTreeMap<String, String>>,
     guard: RwLock<Option<Arc<Guard>>>,
     pending: Mutex<BTreeMap<(RunId, String), oneshot::Sender<Answer>>>,
-    /// Why each pending call needs a person, when it is more than its policy.
-    notes: Mutex<BTreeMap<(RunId, String), String>>,
+    /// Why each pending call needs a person.
+    escalations: Mutex<BTreeMap<(RunId, String), Escalation>>,
     interactive: AtomicBool,
     timeout: Duration,
 }
@@ -55,7 +55,7 @@ impl Approvals {
             tools: RwLock::new(BTreeMap::new()),
             guard: RwLock::new(None),
             pending: Mutex::new(BTreeMap::new()),
-            notes: Mutex::new(BTreeMap::new()),
+            escalations: Mutex::new(BTreeMap::new()),
             interactive: AtomicBool::new(false),
             timeout,
         }
@@ -71,10 +71,18 @@ impl Approvals {
         *self.config.write().unwrap_or_else(PoisonError::into_inner) = config;
     }
 
-    /// The tools on offer, for meta-tool checks and the guard's descriptions.
-    pub fn set_tools(&self, tools: &[IrTool]) {
-        let tools =
-            tools.iter().map(|tool| (tool.name.clone(), tool.description.clone())).collect();
+    /// Every tool the servers described, `off` ones included (a meta-tool may name them), with
+    /// descriptions for the guard.
+    pub fn set_tools(&self, capabilities: &Capabilities) {
+        let mut tools = BTreeMap::new();
+        for server in &capabilities.servers {
+            for tool in &server.tools {
+                tools.insert(format!("{}.{}", server.id, tool.name), tool.description.clone());
+            }
+        }
+        for tool in &capabilities.tools {
+            tools.insert(tool.name.clone(), tool.description.clone());
+        }
         *self.tools.write().unwrap_or_else(PoisonError::into_inner) = tools;
     }
 
@@ -85,23 +93,33 @@ impl Approvals {
 
     /// Why the pending call `call_id` of `run_id` needs a person, beyond its policy.
     pub fn note(&self, run_id: &RunId, call_id: &str) -> Option<String> {
-        let notes = self.notes.lock().unwrap_or_else(PoisonError::into_inner);
-        notes.get(&(run_id.clone(), call_id.to_owned())).cloned()
+        self.escalation(run_id, call_id).and_then(|escalation| escalation.note)
     }
 
-    /// The strictest policy among `request`'s tool and the tools its arguments name, and which
-    /// named tool made it stricter.
-    fn effective_policy(&self, request: &ToolRequest) -> (Policy, Option<String>) {
-        let own = self.policy_of(&request.name);
+    /// Why the pending call `call_id` of `run_id` needs a person.
+    pub fn escalation(&self, run_id: &RunId, call_id: &str) -> Option<Escalation> {
+        let escalations = self.escalations.lock().unwrap_or_else(PoisonError::into_inner);
+        escalations.get(&(run_id.clone(), call_id.to_owned())).cloned()
+    }
+
+    /// The strictest policy among `request`'s tool and the tools its arguments name, the named
+    /// tool that is `off` (if any), and the named tools set to `ask`.
+    fn effective_policy(&self, request: &ToolRequest) -> (Policy, Option<String>, Vec<String>) {
         let tools = self.tools.read().unwrap_or_else(PoisonError::into_inner);
-        let mut strictest = (own, None);
+        let mut policy = self.policy_of(&request.name);
+        let (mut off, mut asking) = (None, Vec::new());
         for name in named_tools(request, tools.keys().map(String::as_str)) {
-            let policy = self.policy_of(&name);
-            if strictness(policy) > strictness(strictest.0) {
-                strictest = (policy, Some(name));
+            let named = self.policy_of(&name);
+            match named {
+                Policy::Off if off.is_none() => off = Some(name),
+                Policy::Ask => asking.push(name),
+                _ => {}
+            }
+            if strictness(named) > strictness(policy) {
+                policy = named;
             }
         }
-        strictest
+        (policy, off, asking)
     }
 
     /// Answers the pending call `call_id` of `run_id`; false if nothing is waiting for it.
@@ -125,6 +143,19 @@ impl Approvals {
     }
 }
 
+/// Why a pending call needs a person.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Escalation {
+    /// Why, beyond the call's own policy, if anything.
+    pub note: Option<String>,
+    /// Tools of the same server that the call's arguments name and that are set to ask:
+    /// "always allow" allows these too.
+    pub asking: Vec<String>,
+    /// The guard flagged the call or could not check it. It will ask again next time whatever
+    /// the policies, so "always allow" cannot help.
+    pub guarded: bool,
+}
+
 fn strictness(policy: Policy) -> u8 {
     match policy {
         Policy::Allow => 0,
@@ -136,9 +167,9 @@ fn strictness(policy: Policy) -> u8 {
 #[async_trait]
 impl ToolGate for Approvals {
     async fn decide(&self, run_id: &RunId, request: &ToolRequest) -> ToolDecision {
-        let (policy, via) = self.effective_policy(request);
+        let (policy, off, asking) = self.effective_policy(request);
         if policy == Policy::Off {
-            let reason = match via {
+            let reason = match off {
                 Some(named) => {
                     format!("`{}` would run `{named}`, which is turned off", request.name)
                 }
@@ -161,10 +192,14 @@ impl ToolGate for Approvals {
             None => Assessment::Unchecked,
         };
         let mut concerns: Vec<String> = Vec::new();
-        if let Some(named) = &via {
-            concerns.push(format!("it would run `{named}`, which is set to ask"));
+        if !asking.is_empty() {
+            let names: Vec<String> = asking.iter().map(|name| format!("`{name}`")).collect();
+            let verb = if asking.len() == 1 { "is" } else { "are" };
+            concerns.push(format!("it would run {}, which {verb} set to ask", names.join(", ")));
         }
-        concerns.extend(assessment.concern());
+        let guarded = assessment.concern();
+        let is_guarded = guarded.is_some();
+        concerns.extend(guarded);
         if policy == Policy::Allow && concerns.is_empty() {
             return ToolDecision::Allow { by: ToolDecider::Policy, note: None };
         }
@@ -182,16 +217,15 @@ impl ToolGate for Approvals {
         }
         let (sender, receiver) = oneshot::channel();
         let key = (run_id.clone(), request.call_id.clone());
-        if let Some(note) = &note {
-            self.notes
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .insert(key.clone(), note.clone());
-        }
+        let escalation = Escalation { note: note.clone(), asking, guarded: is_guarded };
+        self.escalations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(key.clone(), escalation);
         self.pending.lock().unwrap_or_else(PoisonError::into_inner).insert(key.clone(), sender);
         let answer = tokio::time::timeout(self.timeout, receiver).await;
         self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
-        self.notes.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+        self.escalations.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
         let why = note.as_ref().map(|note| format!(" ({note})")).unwrap_or_default();
         match answer {
             Ok(Ok(Answer::Allow)) => ToolDecision::Allow { by: ToolDecider::User, note },
@@ -338,17 +372,27 @@ mod tests {
         server.tools.insert("mouse_click".into(), Policy::Off);
         server.tools.insert("exec_cli".into(), Policy::Ask);
         approvals.set_config(McpConfig { servers: vec![server] });
-        let tool = |name: &str| IrTool {
+        // As in production: the server describes every tool, but `off` ones are not offered.
+        let described = ["batch_tools", "exec_cli", "mouse_click", "read_file"];
+        let status = |name: &str| dagos_mcp::ToolStatus {
+            name: name.into(),
+            description: format!("The {name} tool."),
+            policy: if name == "mouse_click" { Policy::Off } else { Policy::Allow },
+        };
+        let offered = |name: &str| dagos_core::domain::IrTool {
             name: format!("ooda.{name}"),
             description: format!("The {name} tool."),
             input_schema: Default::default(),
         };
-        approvals.set_tools(&[
-            tool("batch_tools"),
-            tool("exec_cli"),
-            tool("mouse_click"),
-            tool("read_file"),
-        ]);
+        approvals.set_tools(&Capabilities {
+            tools: described.iter().filter(|n| **n != "mouse_click").map(|n| offered(n)).collect(),
+            servers: vec![dagos_mcp::ServerStatus {
+                id: "ooda".into(),
+                enabled: true,
+                tools: described.iter().map(|n| status(n)).collect(),
+                error: None,
+            }],
+        });
         let store = Arc::new(dagos_core::store::Store::open_in_memory().unwrap());
         let guard = Guard::new(Arc::new(judge), store, std::path::PathBuf::from("/project"));
         approvals.set_guard(Some(Arc::new(guard)));

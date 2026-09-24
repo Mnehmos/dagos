@@ -31,6 +31,16 @@ pub const RECALL_CHUNK_CHARS: usize = 4000;
 /// Tool results shorter than this always stay in IR: judging them costs more than it saves.
 pub const COMPACT_MIN_CHARS: usize = 2000;
 
+/// The events a turn's text is made of (never the many `inference.delta` events).
+const TURN_EVENTS: &[&str] = &[
+    "message.recorded",
+    "tool.requested",
+    "tool.completed",
+    "response.validated",
+    "review.completed",
+    "run.failed",
+];
+
 /// The longest excerpt of one tool output inside a turn.
 const TOOL_OUTPUT_CHARS: usize = 500;
 
@@ -77,8 +87,11 @@ pub fn recall_candidates(
         .collect();
     let mut turns = Vec::new();
     for turn in &runs[runs.len().saturating_sub(RECALL_SEARCH_TURNS)..] {
-        let events: Vec<EventData> =
-            tx.events(&turn.id)?.into_iter().map(|event| event.data).collect();
+        let events: Vec<EventData> = tx
+            .events_of_types(&turn.id, TURN_EVENTS)?
+            .into_iter()
+            .map(|event| event.data)
+            .collect();
         turns.push(IrRecalledTurn {
             run_id: turn.id.clone(),
             chat: titles.get(&turn.conversation_id).cloned().unwrap_or_default(),

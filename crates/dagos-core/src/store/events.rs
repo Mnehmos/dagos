@@ -65,6 +65,26 @@ impl Tx<'_> {
         self.events_after(run_id, 0)
     }
 
+    /// The run's events of the given `types` (e.g. `tool.completed`), in sequence order. Cheaper
+    /// than [`Tx::events`] when a run's many `inference.delta` events are not needed.
+    pub fn events_of_types(
+        &self,
+        run_id: &RunId,
+        types: &[&str],
+    ) -> Result<Vec<Event>, StoreError> {
+        let placeholders = vec!["?"; types.len()].join(", ");
+        let mut statement = self.conn.prepare(&format!(
+            "SELECT {EVENT_COLUMNS} FROM events \
+             WHERE run_id = ? AND type IN ({placeholders}) ORDER BY sequence"
+        ))?;
+        let mut parameters: Vec<&dyn rusqlite::ToSql> = vec![run_id];
+        parameters.extend(types.iter().map(|kind| kind as &dyn rusqlite::ToSql));
+        let events = statement
+            .query_map(parameters.as_slice(), event_from_row)?
+            .collect::<Result<_, _>>()?;
+        Ok(events)
+    }
+
     /// The run's events with a sequence number greater than `after`, in sequence order.
     pub fn events_after(&self, run_id: &RunId, after: u32) -> Result<Vec<Event>, StoreError> {
         let mut statement = self.conn.prepare(&format!(

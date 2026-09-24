@@ -120,8 +120,17 @@ pub async fn serve(
     workspace: Arc<Workspace>,
     hub: EventHub,
 ) -> std::io::Result<()> {
-    let loopback_only = listener.local_addr()?.ip().is_loopback();
-    let state = Arc::new(AppState { workspace, hub, executing: Mutex::default(), loopback_only });
+    // The app can start processes and run tools on this computer and has no sign-in, so it never
+    // listens beyond loopback; reach it remotely through something that authenticates (an SSH
+    // tunnel, or a reverse proxy with sign-in).
+    if !listener.local_addr()?.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "DAGOS serves only on a loopback address (127.0.0.1 or ::1): the app can run commands              on this computer and has no sign-in. To reach it from elsewhere, use an SSH tunnel              or a reverse proxy that authenticates.",
+        ));
+    }
+    let state =
+        Arc::new(AppState { workspace, hub, executing: Mutex::default(), loopback_only: true });
     axum::serve(listener, router(state)).await
 }
 
@@ -229,7 +238,9 @@ async fn run(
     let mut detail = inspect::run_detail(&workspace.store, &id)?.ok_or_else(not_found)?;
     for call in &mut detail.tool_calls {
         call.pending = workspace.approvals().is_pending(&id, &call.call_id);
-        call.pending_note = workspace.approvals().note(&id, &call.call_id);
+        let escalation = workspace.approvals().escalation(&id, &call.call_id);
+        call.pending_note = escalation.as_ref().and_then(|e| e.note.clone());
+        call.pending_guarded = escalation.is_some_and(|e| e.guarded);
     }
     Ok(Json(detail))
 }
@@ -289,9 +300,15 @@ async fn start_run(
         config.system_prompt = prompt;
     }
     let runtime = state.workspace.runtime();
-    let started = runtime.start_in(thread, message, &config)?;
+    // Recording the run and marking it executing happen under one lock, so a concurrent
+    // `/api/recover` can never see it running but not executing and fail it as interrupted.
+    let started = {
+        let mut executing = state.executing();
+        let started = runtime.start_in(thread, message, &config)?;
+        executing.insert(started.run.id.clone());
+        started
+    };
     let run = started.run.clone();
-    state.executing().insert(run.id.clone());
     let task_state = state.clone();
     tokio::spawn(async move {
         let id = started.run.id.clone();
@@ -415,7 +432,9 @@ async fn conversation(
         for item in &mut turn.items {
             if let TurnItem::Tool(call) = item {
                 call.pending = approvals.is_pending(&turn.run.id, &call.call_id);
-                call.pending_note = approvals.note(&turn.run.id, &call.call_id);
+                let escalation = approvals.escalation(&turn.run.id, &call.call_id);
+                call.pending_note = escalation.as_ref().and_then(|e| e.note.clone());
+                call.pending_guarded = escalation.is_some_and(|e| e.guarded);
             }
         }
     }
@@ -453,8 +472,10 @@ async fn update_conversation(
 
 /// `POST /api/recover`: fails runs left `running` by a process that is gone.
 async fn recover(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
-    let executing = state.executing().clone();
+    // Held while recovering, so no run can start (and not yet be marked executing) meanwhile.
+    let executing = state.executing();
     let recovered = state.workspace.runtime().recover_runs_except(&executing)?;
+    drop(executing);
     Ok(Json(json!({"recovered": recovered})))
 }
 
@@ -656,17 +677,27 @@ async fn answer_tool_call(
         return Err(ApiError::Conflict(format!("call `{call}` of run `{run}` is not waiting")));
     }
     if request.remember && answer == Answer::Allow {
+        let escalation = workspace.approvals().escalation(&run, &call).unwrap_or_default();
+        if escalation.guarded {
+            return Err(ApiError::Conflict(
+                "Jev flagged this call, so it asks every time; allow it once instead".into(),
+            ));
+        }
         let name = inspect::run_detail(&workspace.store, &run)?
             .and_then(|detail| detail.tool_calls.into_iter().find(|c| c.call_id == call))
             .map(|call| call.name)
             .ok_or_else(|| ApiError::NotFound(format!("call `{call}` not found")))?;
+        let _edit = workspace.tool_edit_lock().await;
         let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
-        if let Some((server_id, tool)) = name.split_once('.')
-            && let Some(server) = config.servers.iter_mut().find(|s| s.id == server_id)
-        {
-            server.tools.insert(tool.to_owned(), Policy::Allow);
-            workspace.set_tool_policies(config).map_err(ApiError::Internal)?;
+        // The call's own tool, and the tools it names that made it ask.
+        for name in std::iter::once(&name).chain(&escalation.asking) {
+            if let Some((server_id, tool)) = name.split_once('.')
+                && let Some(server) = config.servers.iter_mut().find(|s| s.id == server_id)
+            {
+                server.tools.insert(tool.to_owned(), Policy::Allow);
+            }
         }
+        workspace.set_tool_policies(config).map_err(ApiError::Internal)?;
     }
     let answered = workspace.approvals().answer(&run, &call, answer);
     Ok(Json(json!({"answered": answered})))
@@ -780,6 +811,7 @@ async fn save_tool_server(
         )));
     }
     let workspace = &state.workspace;
+    let _edit = workspace.tool_edit_lock().await;
     let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
     let cwd = request.cwd.map(|cwd| cwd.trim().to_owned()).filter(|cwd| !cwd.is_empty());
     let args: Vec<String> = request.args.into_iter().filter(|arg| !arg.is_empty()).collect();
@@ -808,6 +840,7 @@ async fn remove_tool_server(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let workspace = &state.workspace;
+    let _edit = workspace.tool_edit_lock().await;
     let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
     let before = config.servers.len();
     config.servers.retain(|server| server.id != id);
@@ -836,6 +869,7 @@ async fn set_tool_policy(
     Json(request): Json<PolicyRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let workspace = &state.workspace;
+    let _edit = workspace.tool_edit_lock().await;
     let mut config = workspace.mcp_config().map_err(ApiError::Internal)?;
     let server = config
         .servers

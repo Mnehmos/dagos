@@ -116,6 +116,9 @@ pub struct ToolCallView {
     pub pending: bool,
     /// Why the pending call needs a person beyond its policy, e.g. risks the guard flagged.
     pub pending_note: Option<String>,
+    /// Whether the guard flagged the pending call, so "always allow" cannot apply (set by the
+    /// server).
+    pub pending_guarded: bool,
 }
 
 /// The tool calls recorded in `events`, in order.
@@ -140,6 +143,7 @@ fn apply_tool_event(calls: &mut Vec<ToolCallView>, data: &EventData) -> bool {
             output: None,
             pending: false,
             pending_note: None,
+            pending_guarded: false,
         }),
         EventData::ToolDecided { call_id, allowed, by, reason } => {
             if let Some(call) = calls.iter_mut().find(|call| &call.call_id == call_id) {
