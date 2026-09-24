@@ -40,6 +40,7 @@ export const api = {
   saveProjectConfig: (id, body) => request("PUT", `/api/projects/${encodeURIComponent(id)}/config`, body),
   conversation: (id) => request("GET", `/api/conversations/${encodeURIComponent(id)}`),
   updateConversation: (id, body) => request("PATCH", `/api/conversations/${encodeURIComponent(id)}`, body),
+  stop: (run) => request("POST", `/api/runs/${encodeURIComponent(run)}/stop`),
   answerTool: (run, call, body) =>
     request("POST", `/api/runs/${encodeURIComponent(run)}/tools/${encodeURIComponent(call)}`, body),
   tools: () => request("GET", "/api/tools"),

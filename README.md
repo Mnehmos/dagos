@@ -64,6 +64,9 @@ The app works like a normal chat client, and every message is still a full DAGOS
   and "N results left out" under a reply when that happened. A new chat starts with an empty context but Jev can still bring in any
   durable node of the project. Chats are titled after their first message; rename one by clicking
   its title, and archive it to hide it (its runs stay durable, and a new message restores it).
+- **Stop** (`Esc`) replaces Send while a reply is running: the run stops at its current step
+  (waiting for the model, a tool, your approval, or Jev) and fails as `cancelled`; everything it
+  recorded before stays inspectable.
 - **Chat / Inspect** (`v`) switches between the conversation and the run inspector: each turn's
   pipeline, active context, Jev output, IR, validated response, and events. Every turn has an
   **Inspect** link; `j`/`k` move between turns.

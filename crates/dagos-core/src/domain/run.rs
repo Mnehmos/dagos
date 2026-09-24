@@ -131,6 +131,8 @@ closed_enum!(
         EmissionRejected => "emission_rejected",
         /// The run was still running when DAGOS stopped.
         Interrupted => "interrupted",
+        /// A person stopped the run.
+        Cancelled => "cancelled",
         /// Persistence or another internal step failed.
         Internal => "internal",
     }

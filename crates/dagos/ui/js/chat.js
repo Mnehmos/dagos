@@ -123,6 +123,7 @@ const TOOL_STATUS = {
   running: "running…",
   completed: "done",
   failed: "failed",
+  stopped: "stopped",
   denied: "denied",
 };
 

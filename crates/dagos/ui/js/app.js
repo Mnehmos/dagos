@@ -224,6 +224,37 @@ function renderChat({ forceScroll = false } = {}) {
   if (state.renaming) $("chat-header").querySelector("input")?.select();
   renderTitle();
   renderInspectBar();
+  renderComposer();
+}
+
+/** The run of this chat that this app is executing right now, if any. */
+function executingRun() {
+  const turns = state.conversation?.turns ?? [];
+  const last = turns[turns.length - 1];
+  const executing = state.overview?.executing ?? [];
+  return last?.run.status === "running" && executing.includes(last.run.id) ? last.run.id : null;
+}
+
+/** While a reply is running, Stop takes the place of Send. */
+function renderComposer() {
+  const running = executingRun();
+  $("stop").hidden = !running;
+  $("send").hidden = Boolean(running);
+}
+
+async function stopRun() {
+  const run = executingRun();
+  if (!run) return;
+  $("stop").disabled = true;
+  try {
+    await api.stop(run);
+    toast("Stopping…");
+  } catch (error) {
+    showError(error);
+  } finally {
+    $("stop").disabled = false;
+    scheduleRefresh();
+  }
 }
 
 function renderMode() {
@@ -733,6 +764,7 @@ function onKeyDown(event) {
       renderChat();
     } else if (state.configOpen) toggleConfig(false);
     else if (state.selectedNodeId) selectNode(null);
+    else if (state.mode === "chat" && executingRun()) stopRun();
     return;
   }
   const tab = event.target.closest?.(".tabs [role=tab]");
@@ -773,6 +805,7 @@ function bind() {
   document.addEventListener("submit", onSubmit);
   document.addEventListener("keydown", onKeyDown);
   $("composer").addEventListener("submit", sendMessage);
+  $("stop").addEventListener("click", stopRun);
   $("message").addEventListener("input", autosize);
   $("message").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {

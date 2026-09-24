@@ -143,6 +143,20 @@ impl Approvals {
     }
 }
 
+/// A call waiting for a person; forgets it when dropped.
+struct Waiting<'a> {
+    approvals: &'a Approvals,
+    key: (RunId, String),
+}
+
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        let approvals = self.approvals;
+        approvals.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.key);
+        approvals.escalations.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.key);
+    }
+}
+
 /// Why a pending call needs a person.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Escalation {
@@ -223,9 +237,10 @@ impl ToolGate for Approvals {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(key.clone(), escalation);
         self.pending.lock().unwrap_or_else(PoisonError::into_inner).insert(key.clone(), sender);
+        // Removed when this wait ends, however it ends: answered, timed out, or dropped because
+        // the run was stopped.
+        let _waiting = Waiting { approvals: self, key };
         let answer = tokio::time::timeout(self.timeout, receiver).await;
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
-        self.escalations.lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
         let why = note.as_ref().map(|note| format!(" ({note})")).unwrap_or_default();
         match answer {
             Ok(Ok(Answer::Allow)) => ToolDecision::Allow { by: ToolDecider::User, note },
@@ -478,5 +493,24 @@ mod tests {
             guarded(Judge::Cannot).decide(&run, &read).await,
             ToolDecision::Allow { by: ToolDecider::Policy, note: None }
         );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_wait_forgets_the_pending_call() {
+        let approvals = approvals(Duration::from_secs(60));
+        approvals.set_interactive(true);
+        let run = RunId::parse("run_1").unwrap();
+        let waiting = {
+            let (approvals, run) = (approvals.clone(), run.clone());
+            tokio::spawn(async move { approvals.decide(&run, &request("ooda.exec_cli")).await })
+        };
+        while !approvals.is_pending(&run, "call_1") {
+            tokio::task::yield_now().await;
+        }
+        // Stopping the run drops its wait for a person.
+        waiting.abort();
+        let _ = waiting.await;
+        assert!(!approvals.is_pending(&run, "call_1"), "nothing waits for an answer any more");
+        assert!(approvals.escalation(&run, "call_1").is_none());
     }
 }

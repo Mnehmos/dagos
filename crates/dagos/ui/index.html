@@ -89,6 +89,7 @@
                 <span id="config-provider-chip">…</span><span class="chip-sep" aria-hidden="true">/</span><span id="config-model-chip">…</span>
               </button>
               <span id="composer-hint" class="hint">Enter sends · Shift+Enter adds a line</span>
+              <button id="stop" type="button" class="danger" hidden title="Stop the running reply (Esc)">Stop</button>
               <button id="send" type="submit" class="primary">Send</button>
             </div>
           </form>
@@ -130,7 +131,7 @@
       <div><dt><kbd>c</kbd></dt><dd>Provider, model, system prompt</dd></div>
       <div><dt><kbd>s</kbd></dt><dd>Providers, API keys, and Jev</dd></div>
       <div><dt><kbd>t</kbd></dt><dd>Theme: system, light, dark</dd></div>
-      <div><dt><kbd>Esc</kbd></dt><dd>Close panels</dd></div>
+      <div><dt><kbd>Esc</kbd></dt><dd>Close panels; with none open, stop a running reply</dd></div>
     </dl>
     <form method="dialog"><button id="help-close" type="submit" class="primary">Close</button></form>
   </dialog>

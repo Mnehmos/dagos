@@ -6,7 +6,7 @@
 //! loopback and refuses requests addressed to any other host name, so web pages elsewhere cannot
 //! reach it through DNS rebinding; mutations also require JSON bodies.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -20,7 +20,7 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, patch, post, put};
 use dagos_core::domain::{ConversationId, Event, ModelId, ProjectId, ProviderId, RunConfig, RunId};
-use dagos_core::runtime::{RuntimeError, Thread};
+use dagos_core::runtime::{Runtime, RuntimeError, Thread};
 use dagos_core::store::{EventListener, StoreError};
 use dagos_mcp::{McpServer, Policy};
 use serde::{Deserialize, Serialize};
@@ -71,13 +71,14 @@ impl Default for EventHub {
 struct AppState {
     workspace: Arc<Workspace>,
     hub: EventHub,
-    /// Runs this process is executing right now; a `running` run outside this set is stale.
-    executing: Mutex<BTreeSet<RunId>>,
+    /// Runs this process is executing right now, with the runtime executing each (a reload may
+    /// have replaced the workspace's runtime since); a `running` run outside this map is stale.
+    executing: Mutex<BTreeMap<RunId, Arc<Runtime>>>,
     loopback_only: bool,
 }
 
 impl AppState {
-    fn executing(&self) -> std::sync::MutexGuard<'_, BTreeSet<RunId>> {
+    fn executing(&self) -> std::sync::MutexGuard<'_, BTreeMap<RunId, Arc<Runtime>>> {
         self.executing.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -100,6 +101,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/projects/{project}/config", put(update_project_config))
         .route("/api/conversations/{conversation}", get(conversation).patch(update_conversation))
         .route("/api/runs/{run}/tools/{call}", post(answer_tool_call))
+        .route("/api/runs/{run}/stop", post(stop_run))
         .route("/api/tools", get(tools))
         .route("/api/tools/import", get(import_candidates))
         .route("/api/tools/servers/{id}", put(save_tool_server).delete(remove_tool_server))
@@ -219,7 +221,7 @@ struct ServerOverview {
 
 async fn overview(State(state): State<Arc<AppState>>) -> Result<Json<ServerOverview>, ApiError> {
     let overview = inspect::overview(&state.workspace)?;
-    let executing = state.executing().iter().cloned().collect();
+    let executing = state.executing().keys().cloned().collect();
     Ok(Json(ServerOverview { overview, executing }))
 }
 
@@ -305,7 +307,7 @@ async fn start_run(
     let started = {
         let mut executing = state.executing();
         let started = runtime.start_in(thread, message, &config)?;
-        executing.insert(started.run.id.clone());
+        executing.insert(started.run.id.clone(), runtime.clone());
         started
     };
     let run = started.run.clone();
@@ -415,7 +417,7 @@ async fn project_overview(
     let id = existing_project(&state, &project)?;
     let overview = inspect::project_overview(&state.workspace, &id)?
         .ok_or_else(|| ApiError::NotFound(format!("project `{id}` not found")))?;
-    let executing = state.executing().iter().cloned().collect();
+    let executing = state.executing().keys().cloned().collect();
     Ok(Json(ServerOverview { overview, executing }))
 }
 
@@ -474,7 +476,8 @@ async fn update_conversation(
 async fn recover(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::Value>, ApiError> {
     // Held while recovering, so no run can start (and not yet be marked executing) meanwhile.
     let executing = state.executing();
-    let recovered = state.workspace.runtime().recover_runs_except(&executing)?;
+    let live: BTreeSet<RunId> = executing.keys().cloned().collect();
+    let recovered = state.workspace.runtime().recover_runs_except(&live)?;
     drop(executing);
     Ok(Json(json!({"recovered": recovered})))
 }
@@ -658,6 +661,20 @@ struct ToolAnswer {
     /// With `allow`: also set the tool's policy to `allow`, so later calls run without asking.
     #[serde(default)]
     remember: bool,
+}
+
+/// `POST /api/runs/{run}/stop`: stops a run this app is executing. It fails with `cancelled` at
+/// its current step; what it already committed stays.
+async fn stop_run(
+    State(state): State<Arc<AppState>>,
+    Path(run): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let run = RunId::parse(run).map_err(ApiError::bad_request)?;
+    let runtime = state.executing().get(&run).cloned();
+    match runtime {
+        Some(runtime) if runtime.stop(&run) => Ok(Json(json!({"stopping": run}))),
+        _ => Err(ApiError::Conflict(format!("run `{run}` is not executing in this app"))),
+    }
 }
 
 /// `POST /api/runs/{run}/tools/{call}`: a person's answer to a call waiting for approval.

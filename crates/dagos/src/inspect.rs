@@ -158,6 +158,14 @@ fn apply_tool_event(calls: &mut Vec<ToolCallView>, data: &EventData) -> bool {
                 call.output = Some(output.clone());
             }
         }
+        // A run that ended (stopped, interrupted, or failed) with a call still undecided or
+        // running left it unfinished.
+        EventData::RunFailed { .. } | EventData::RunCompleted {} => {
+            for call in calls.iter_mut().filter(|c| matches!(c.status, "awaiting" | "running")) {
+                call.status = "stopped";
+            }
+            return false;
+        }
         _ => return false,
     }
     true

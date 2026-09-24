@@ -11,7 +11,7 @@
 //! committed together or not at all.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use crate::context::recall::{
@@ -83,6 +83,8 @@ pub struct Runtime {
     conversation_window: usize,
     reviewer: Option<Arc<dyn Reviewer>>,
     max_review_rounds: usize,
+    /// Stop signals of the runs this runtime is executing.
+    stops: Mutex<BTreeMap<RunId, Arc<tokio::sync::Notify>>>,
     inference_timeout: Duration,
     jev_timeout: Duration,
 }
@@ -110,6 +112,7 @@ impl Runtime {
             conversation_window: RECENT_RUN_OUTCOMES,
             reviewer: None,
             max_review_rounds: DEFAULT_MAX_REVIEW_ROUNDS,
+            stops: Mutex::default(),
             inference_timeout: DEFAULT_INFERENCE_TIMEOUT,
             jev_timeout: DEFAULT_JEV_TIMEOUT,
         }
@@ -305,16 +308,35 @@ impl Runtime {
         Ok(StartedRun { run, task, message: message.to_owned() })
     }
 
+    /// Stops `run_id` if this runtime is executing it: the run fails with `cancelled` at its
+    /// current step (waiting for a provider, a tool, a person, or Jev), and nothing it had not
+    /// committed yet is recorded. Returns whether the run was executing here.
+    pub fn stop(&self, run_id: &RunId) -> bool {
+        let stops = self.stops.lock().unwrap_or_else(PoisonError::into_inner);
+        stops.get(run_id).map(|stop| stop.notify_one()).is_some()
+    }
+
     /// Executes the rest of a started run's pipeline and returns the finished run.
     pub async fn finish(&self, started: StartedRun) -> Result<Run, RuntimeError> {
         let StartedRun { run, task, message } = started;
+        let stop = Arc::new(tokio::sync::Notify::new());
+        self.stops
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(run.id.clone(), stop.clone());
         let outcome = match self.providers.get(&run.provider_id).cloned() {
-            Some(provider) => self.execute(&run, &task, &message, provider.as_ref()).await,
+            Some(provider) => tokio::select! {
+                outcome = self.execute(&run, &task, &message, provider.as_ref()) => outcome,
+                () = stop.notified() => {
+                    Err(StageFailure::new(ErrorCode::Cancelled, "stopped by the person"))
+                }
+            },
             None => Err(StageFailure::new(
                 ErrorCode::ProviderFailed,
                 format!("provider `{}` is not registered", run.provider_id),
             )),
         };
+        self.stops.lock().unwrap_or_else(PoisonError::into_inner).remove(&run.id);
         if let Some(reviewer) = &self.reviewer {
             reviewer.end(&run.id);
         }
